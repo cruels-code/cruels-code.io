@@ -1,5 +1,9 @@
-
-    <title>Mondrian Style Noise Shader</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pixel Drift Emulation</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React and ReactDOM -->
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -698,4 +702,4 @@
 
     </script>
 </body>
-
+</html>
