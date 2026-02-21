@@ -58,12 +58,12 @@
         const POST_EFFECTS_MAP = {
             0: "Invert", 1: "ChannelSwap", 2: "Posterize", 3: "PixelSort", 4: "Thermal",
             5: "WaveDistort", 6: "RGBShift", 7: "Pixelate", 8: "Noise", 9: "Tear",
-            10: "Twirl", 11: "Shear", 12: "Pinch", 13: "SlitScan", 14: "Strobe", 15: "ChromaticAberration",
-            16: "PixelStretch", 17: "Dither", 18: "SlitScanVertical", 19: "Scanlines", 20: "Jitter",
-            21: "HueCycle", 22: "CMYKHalftone", 23: "LCD", 24: "8Bit", 25: "ASCII", 
-            26: "PerlinNoise", 27: "LumaMesh", 28: "VHS", 29: "FindEdges", 30: "MovingLines",
-            31: "SolitaireWin", 32: "PencilSketch", 33: "Glow",
-            34: "BarrelDistortion", 35: "MeltingLines", 36: "BlockDisplacement"
+            10: "Twirl", 11: "Shear", 12: "Pinch", 13: "SlitScan", 14: "ChromaticAberration",
+            15: "PixelStretch", 16: "Dither", 17: "SlitScanVertical", 18: "Scanlines", 19: "Jitter",
+            20: "HueCycle", 21: "CMYKHalftone", 22: "LCD", 23: "8Bit", 24: "ASCII", 
+            25: "PerlinNoise", 26: "LumaMesh", 27: "VHS", 28: "FindEdges", 29: "MovingLines",
+            30: "SolitaireWin", 31: "PencilSketch", 32: "Glow",
+            33: "BarrelDistortion", 34: "MeltingLines", 35: "BlockDisplacement"
         };
 
         // ==========================================
@@ -624,11 +624,6 @@
                 }
                 return getStylizedColor(uv);
             }
-            vec4 effect_Strobe(vec4 color, float seed) {
-                float speed = mix(20.0, 80.0, seed);
-                float strobe = step(0.5, sin(iTime * speed));
-                return mix(color, vec4(1.0), strobe * u_intensity);
-            }
             vec4 effect_ChromaticAberration(vec2 uv, float seed) {
                 float speed = mix(2.0, 5.0, seed);
                 float amount = mix(0.001, 0.02, seed) * u_intensity * (1.0 + sin(iTime * speed) * 0.8);
@@ -967,29 +962,28 @@
                 else if (pe == 11) return effect_Shear(uv, cellRect, seed);
                 else if (pe == 12) return effect_Pinch(uv, cellRect, seed);
                 else if (pe == 13) return effect_SlitScan(uv, seed);
-                else if (pe == 14) return effect_Strobe(baseColor, seed);
-                else if (pe == 15) return effect_ChromaticAberration(uv, seed);
-                else if (pe == 16) return effect_PixelStretch(uv, seed);
-                else if (pe == 17) return effect_Dither(baseColor, uv, seed);
-                else if (pe == 18) return effect_SlitScanVertical(uv, seed);
-                else if (pe == 19) return effect_Scanlines(baseColor, uv, seed);
-                else if (pe == 20) return effect_Jitter(uv, seed);
-                else if (pe == 21) return effect_HueCycle(baseColor, seed);
-                else if (pe == 22) return effect_CMYKHalftone(uv, seed);
-                else if (pe == 23) return effect_LCD(uv, seed);
-                else if (pe == 24) return effect_8Bit(baseColor, seed);
-                else if (pe == 25) return effect_ASCII(uv, seed);
-                else if (pe == 26) return effect_PerlinNoise(uv, seed);
-                else if (pe == 27) return effect_LumaMesh(uv, seed);
-                else if (pe == 28) return effect_VHS(uv, baseColor, seed);
-                else if (pe == 29) return effect_FindEdges(uv, seed);
-                else if (pe == 30) return effect_MovingLines(baseColor, uv, seed);
-                else if (pe == 31) return effect_SolitaireWin(uv, seed);
-                else if (pe == 32) return effect_PencilSketch(uv, seed);
-                else if (pe == 33) return effect_Glow(uv, seed);
-                else if (pe == 34) return effect_BarrelDistortion(uv, seed);
-                else if (pe == 35) return effect_MeltingLines(uv, seed);
-                else if (pe == 36) return effect_BlockDisplacement(uv, seed);
+                else if (pe == 14) return effect_ChromaticAberration(uv, seed);
+                else if (pe == 15) return effect_PixelStretch(uv, seed);
+                else if (pe == 16) return effect_Dither(baseColor, uv, seed);
+                else if (pe == 17) return effect_SlitScanVertical(uv, seed);
+                else if (pe == 18) return effect_Scanlines(baseColor, uv, seed);
+                else if (pe == 19) return effect_Jitter(uv, seed);
+                else if (pe == 20) return effect_HueCycle(baseColor, seed);
+                else if (pe == 21) return effect_CMYKHalftone(uv, seed);
+                else if (pe == 22) return effect_LCD(uv, seed);
+                else if (pe == 23) return effect_8Bit(baseColor, seed);
+                else if (pe == 24) return effect_ASCII(uv, seed);
+                else if (pe == 25) return effect_PerlinNoise(uv, seed);
+                else if (pe == 26) return effect_LumaMesh(uv, seed);
+                else if (pe == 27) return effect_VHS(uv, baseColor, seed);
+                else if (pe == 28) return effect_FindEdges(uv, seed);
+                else if (pe == 29) return effect_MovingLines(baseColor, uv, seed);
+                else if (pe == 30) return effect_SolitaireWin(uv, seed);
+                else if (pe == 31) return effect_PencilSketch(uv, seed);
+                else if (pe == 32) return effect_Glow(uv, seed);
+                else if (pe == 33) return effect_BarrelDistortion(uv, seed);
+                else if (pe == 34) return effect_MeltingLines(uv, seed);
+                else if (pe == 35) return effect_BlockDisplacement(uv, seed);
                 return baseColor;
             }
 
@@ -1127,7 +1121,7 @@
 
             for(let i=0; i<32; i++) {
                 effects.push(i < count ? pool[i] : 0);
-                postEffects.push(i < count ? Math.floor(Math.random() * 37) : -1); 
+                postEffects.push(i < count ? Math.floor(Math.random() * 36) : -1); 
                 seeds.push(Math.random());
                 speeds.push((1.0 + Math.random() * 2.0) * CONFIG.SPEED_MULTIPLIER); 
                 rotations.push(Math.floor(Math.random() * 4));
@@ -1135,7 +1129,7 @@
                 scales.push(1.0 + Math.random() * 1.0); 
             }
             
-            const bgPostEffect = Math.floor(Math.random() * 37);
+            const bgPostEffect = Math.floor(Math.random() * 36);
             const bgSeed = Math.random();
 
             return { effects, postEffects, seeds, speeds, rotations, palettes, scales, bgPostEffect, bgSeed };
@@ -1148,9 +1142,6 @@
         const ShaderCanvas = () => {
             const canvasRef = useRef(null);
             const reqIdRef = useRef(null);
-            
-            // OPTIMIZATION 1: Bypass React reconciliation for high-frequency tooltip
-            const tooltipRef = useRef(null); 
             
             const [config, setConfig] = useState({
                 feedbackDecay: 0.99, 
@@ -1169,44 +1160,6 @@
                 lastReset: 0
             });
             
-            const handleMouseMove = useCallback((e) => {
-                if (!canvasRef.current || !tooltipRef.current) return;
-                const rect = canvasRef.current.getBoundingClientRect();
-                const u = (e.clientX - rect.left) / rect.width;
-                const v = 1.0 - (e.clientY - rect.top) / rect.height; 
-
-                const zones = simState.current.rects;
-                if (!zones || zones.length === 0) return;
-
-                let name = null;
-                for(let i=0; i<32; i++) {
-                    const z = zones[i];
-                    if (!z || z.w < 0.001) continue;
-                    if (u >= z.x && u < z.x + z.w && v >= z.y && v < z.y + z.h) {
-                        const driftName = EFFECTS_MAP[simState.current.effects[i]];
-                        const postName = POST_EFFECTS_MAP[simState.current.postEffects[i]] || "None";
-                        name = `${driftName} + [${postName}]`;
-                        break;
-                    }
-                }
-                
-                // If not hovering over a zone, show the background effect
-                if (!name && simState.current.bgPostEffect !== undefined) {
-                    const bgPostName = POST_EFFECTS_MAP[simState.current.bgPostEffect] || "None";
-                    name = `Background + [${bgPostName}]`;
-                }
-
-                // Directly manipulate DOM to prevent component re-renders
-                if (name) {
-                    tooltipRef.current.style.display = 'block';
-                    tooltipRef.current.style.left = `${e.clientX + 20}px`;
-                    tooltipRef.current.style.top = `${e.clientY + 20}px`;
-                    tooltipRef.current.innerText = name;
-                } else {
-                    tooltipRef.current.style.display = 'none';
-                }
-            }, []);
-
             useEffect(() => {
                 const canvas = canvasRef.current;
                 const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
@@ -1432,21 +1385,9 @@
             return (
                 <div 
                     className="relative w-full h-full group bg-black flex items-center justify-center overflow-hidden"
-                    onMouseMove={handleMouseMove}
                     onClick={() => setConfig(prev => ({ ...prev, grayscale: !prev.grayscale }))}
-                    onMouseLeave={() => { if (tooltipRef.current) tooltipRef.current.style.display = 'none'; }}
                 >
                     <canvas ref={canvasRef} className="shadow-[0_0_50px_rgba(255,255,255,0.15)] w-full h-full" />
-                    
-                    {/* OPTIMIZATION 1.5: Using a persistent ref'd DOM node for the tooltip instead of React State */}
-                    <div ref={tooltipRef} style={{
-                        display: 'none',
-                        position: 'fixed', 
-                        color: 'white', backgroundColor: 'rgba(0, 0, 0, 0.9)', border: '1px solid white',
-                        padding: '6px 10px', fontFamily: 'Courier New, monospace', fontWeight: 'bold',
-                        fontSize: '14px', pointerEvents: 'none', zIndex: 100, textTransform: 'uppercase',
-                        boxShadow: '4px 4px 0px rgba(255,255,255,0.3)'
-                    }}></div>
                 </div>
             );
         };
