@@ -1,496 +1,1073 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Pixel Drift Emulation - Refined</title>
+    <title>Pixel Drift Emulation (Optimized)</title>
+    
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <!-- Using Production Build of React for performance -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
     <style>
-        body,
-        html,
-        #root {
+        body, html, #root {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background-color: #000;
+            background-color: #000000;
             font-family: 'Courier New', Courier, monospace;
         }
-
         canvas {
             display: block;
         }
     </style>
 </head>
-
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useRef, useEffect, useState } = React;
+        const { useRef, useEffect, useCallback, useState } = React;
 
-        // --- CONFIGURATION ---
+        // ==========================================
+        // 1. CONFIGURATION & MAPPINGS
+        // ==========================================
         const CONFIG = {
-            INTERNAL_RES_X: 2048,
-            INTERNAL_RES_Y: 2048,
+            INTERNAL_RES_X: 1440,
+            INTERNAL_RES_Y: 2160,
             MIN_ZONES: 5,
-            MAX_ZONES: 11,
-            RESET_INTERVAL: 8000,
+            MAX_ZONES: 12,
+            RESET_INTERVAL: 60000,
+            TRANSITION_DURATION: 2000,
+            SPEED_MULTIPLIER: 0.6 // Slows down overall movement and time by 40%
         };
 
         const EFFECTS_MAP = {
-            0: "Rain", 1: "Rise", 2: "Wind", 3: "Turbulence",
-            4: "Implode", 5: "Explode", 6: "Static", 7: "Wave",
-            8: "Swirl", 9: "Vortex", 10: "Laser", 11: "Zipper",
-            12: "Shear", 13: "Grid", 14: "Cross", 15: "Bounce",
-            16: "Shiver", 17: "Glitch V", 18: "Glitch H", 19: "Warp",
-            20: "Bulge", 21: "Pinch", 22: "Ripple", 23: "Twist",
-            24: "Scan", 25: "Slide", 26: "Drip", 27: "Shred"
+            0: "Rain", 1: "Rise", 2: "Wind", 3: "Turbulence", 4: "Implode",
+            6: "Static", 7: "Wave", 8: "Swirl", 9: "Vortex", 10: "Laser",
+            11: "Zipper", 12: "Shear", 13: "Grid", 14: "Cross", 15: "Bounce",
+            16: "Shiver", 17: "Glitch V", 18: "Glitch H", 19: "Warp", 20: "Bulge",
+            21: "Pinch", 22: "Ripple", 23: "Twist", 24: "Scan", 25: "Slide",
+            26: "Drip", 27: "Shred", 28: "Life", 29: "Reaction", 30: "Maze", 31: "Forest",
+            32: "Datamosh"
         };
 
-        // --- GLSL SHADERS ---
+        const POST_EFFECTS_MAP = {
+            0: "Invert", 1: "ChannelSwap", 2: "Posterize", 3: "PixelSort", 4: "Thermal",
+            5: "WaveDistort", 6: "RGBShift", 7: "Pixelate", 8: "Noise", 9: "Tear",
+            10: "Twirl", 11: "Shear", 12: "Pinch", 13: "SlitScan", 14: "Strobe", 15: "ChromaticAberration",
+            16: "PixelStretch", 17: "Dither", 18: "SlitScanVertical", 19: "Scanlines", 20: "Jitter",
+            21: "HueCycle", 22: "CMYKHalftone", 23: "LCD", 24: "8Bit", 25: "ASCII", 
+            26: "PerlinNoise", 27: "LumaMesh", 28: "VHS", 29: "FindEdges", 30: "MovingLines",
+            31: "SolitaireWin", 32: "PencilSketch", 33: "Glow",
+            34: "BarrelDistortion", 35: "MeltingLines", 36: "BlockDisplacement"
+        };
 
-        const vertexShaderSource = `
-        #version 300 es 
-        in vec2 a_position;
-        void main() {
-            gl_Position = vec4(a_position, 0.0, 1.0); 
-        }
+        // ==========================================
+        // 2. GLSL SHADERS
+        // ==========================================
+        const vertexShaderSource = `#version 300 es 
+            in vec2 a_position;
+            void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
         `;
 
-        const feedbackShaderSource = `
-        #version 300 es 
-        precision highp float;
-        precision highp int;
+        const feedbackShaderSource = `#version 300 es 
+            precision highp float;
+            precision highp int;
 
-        uniform vec2 iResolution;
-        uniform float iTime;
-        uniform sampler2D u_prevFrame;
-        
-        // Zone Arrays
-        uniform vec4 u_rects[32];       // (x, y, width, height)
-        uniform int u_effects[32];
-        uniform float u_speeds[32];
-        uniform float u_seeds[32];
-        uniform int u_rotations[32];
+            uniform vec2 iResolution;
+            uniform float iTime;
+            uniform float u_timeSinceReset;
+            uniform sampler2D u_prevFrame;
+            
+            uniform vec4 u_rects[32];
+            uniform int u_effects[32];
+            uniform float u_speeds[32];
+            uniform float u_seeds[32];
+            uniform int u_rotations[32];
+            uniform float u_scales[32];
+            uniform vec2 u_velocities[32];
+            uniform int u_palettes[32];
 
-        uniform float u_feedbackDecay;
-        uniform float u_pixelSorting;
+            uniform float u_feedbackDecay;
+            uniform float u_pixelSorting;
+            uniform float u_sortThreshold;
 
-        out vec4 fragColorOut;
+            out vec4 fragColorOut;
 
-        // Utils
-        float random(vec2 st) { 
-            return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123); 
-        }
-        
-        // Simplex 2D noise
-        vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
-        float snoise(vec2 v){
-            const vec4 C = vec4(0.211324865405187, 0.366025403784439,
-                    -0.577350269189626, 0.024390243902439);
-            vec2 i  = floor(v + dot(v, C.yy) );
-            vec2 x0 = v -   i + dot(i, C.xx);
-            vec2 i1;
-            i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-            vec4 x12 = x0.xyxy + C.xxzz;
-            x12.xy -= i1;
-            i = mod(i, 289.0);
-            vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 ))
-                + i.x + vec3(0.0, i1.x, 1.0 ));
-            vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
-            m = m*m ;
-            m = m*m ;
-            vec3 x = 2.0 * fract(p * C.www) - 1.0;
-            vec3 h = abs(x) - 0.5;
-            vec3 ox = floor(x + 0.5);
-            vec3 a0 = x - ox;
-            m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
-            vec3 g;
-            g.x  = a0.x  * x0.x  + h.x  * x0.y;
-            g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-            return 130.0 * dot(m, g);
-        }
-
-        vec2 curlNoise(vec2 p) {
-            const float e = 0.01;
-            float n1 = snoise(p + vec2(e, 0.0));
-            float n2 = snoise(p - vec2(e, 0.0));
-            float n3 = snoise(p + vec2(0.0, e));
-            float n4 = snoise(p - vec2(0.0, e));
-            vec2 grad = vec2(n1 - n2, n3 - n4) / (2.0 * e);
-            return vec2(grad.y, -grad.x); 
-        }
-        
-        float noise(vec2 st) {
-            return snoise(st) * 0.5 + 0.5;
-        }
-
-        bool insideBox(vec2 uv, vec4 rect) {
-            return uv.x >= rect.x && uv.x < rect.x + rect.z &&
-                   uv.y >= rect.y && uv.y < rect.y + rect.w;
-        }
-        vec2 rotateVector(vec2 v, int r) {
-            if (r == 1) return vec2(-v.y, v.x);
-            if (r == 2) return vec2(-v.x, -v.y);
-            if (r == 3) return vec2(v.y, -v.x);
-            return v;
-        }
-        
-        vec3 rgb2hsv(vec3 c) {
-            vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-            vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
-            vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
-            float d = q.x - min(q.w, q.y);
-            float e = 1.0e-10;
-            return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-        }
-
-        vec3 hsv2rgb(vec3 c) {
-            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-        }
-
-        // --- COLOR EFFECTS (Post-Process) ---
-        vec3 applyColorEffect(int id, vec3 color, vec2 uv, float seed, float time) {
-            switch(id) {
-                case 100: return 1.0 - color; // Invert
-                case 101: return color.brg; // Channel Swap 1
-                case 102: return floor(color * 4.0) / 4.0; // Posterize
-                case 103: { // Thermal
-                    float lum = dot(color, vec3(0.3,0.59,0.11));
-                    vec3 heat = mix(vec3(0,0,1), vec3(1,1,0), lum);
-                    return mix(heat, vec3(1,0,0), smoothstep(0.5, 0.8, lum));
-                }
-                case 104: { // Hue Cycle
-                    vec3 hsv = rgb2hsv(color);
-                    hsv.x = fract(hsv.x + time * 0.1);
-                    return hsv2rgb(hsv);
-                }
-                case 105: { // Scanlines
-                    float line = step(0.5, sin(uv.y * 200.0));
-                    return color * (0.5 + 0.5 * line);
-                }
-                case 106: { // Noise Grain
-                    float n = random(uv + time);
-                    return color + (n - 0.5) * 0.2;
-                }
-                case 107: return color * (1.0 + 0.5 * sin(time * 10.0)); // Strobe
-                case 108: { // CMYK Halftoneish
-                    float dotSize = 100.0;
-                    vec2 grid = fract(uv * dotSize) - 0.5;
-                    float d = length(grid);
-                    return color * step(d, 0.4);
-                }
-                case 109: { // 8-Bit
-                    return floor(color * 2.0) / 2.0; 
-                }
-                case 110: { // Find Edges (Simple diff) - Hard in single pass, approx with noise
-                     if(random(uv) > 0.9) return vec3(1.0);
-                     return color;
-                }
-                case 111: { // VHS Tuning
-                    float n = noise(vec2(uv.y * 10.0, time));
-                    if(abs(uv.y - sin(time)*0.5) < 0.1) return color + vec3(n*0.2);
-                    return color;
-                }
-                case 112: { // Sepia/Old
-                     return color * vec3(1.2, 1.0, 0.8);
-                }
-                default: return color;
+            float random(vec2 st) { return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123); }
+            
+            float noise(vec2 st) {
+                vec2 i = floor(st); vec2 f = fract(st); vec2 u = f*f*(3.0-2.0*f);
+                float a = random(i); float b = random(i + vec2(1.0, 0.0));
+                float c = random(i + vec2(0.0, 1.0)); float d = random(i + vec2(1.0, 1.0));
+                return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
             }
-        }
 
-        // --- DISPLACEMENT EFFECTS (UV) ---
-        vec2 getDisplacement(int effect, vec2 uv, vec2 center, float dist, vec2 toCenter, vec2 texel, float speed, float time) {
-            vec2 offset = vec2(0.0);
-            
-            // Map User Set 2 to 0-30 range or similar
-            // 0-27: Existing
-            // 28+: New UV Effects
-            
-            switch(effect) {
-                // --- CLASSIC SET ---
-                case 0: offset.y = -2.0 * texel.y * speed; break; // Rain
-                case 1: offset.y = 2.0 * texel.y * speed; break; // Rise
-                case 2: offset.x = 2.0 * texel.x * speed; break; // Wind
-                case 3: { // Curl Noise
-                    vec2 nCoord = uv * 3.0 + time * 0.05; 
-                    offset = curlNoise(nCoord) * texel * 2.0 * speed;
-                    break;
-                }
-                case 4: offset = normalize(toCenter) * texel * speed * 1.5; break; // Implode
-                case 5: offset = -normalize(toCenter) * texel * speed * 1.5; break; // Explode
-                case 6: // Static
-                    if (mod(time * 20.0, 10.0) < 2.0) offset.x = (random(uv + time) - 0.5) * 20.0 * texel.x;
-                    break;
-                case 7: offset.y = sin(uv.x * 12.0 + time * 1.0) * 4.0 * texel.y * speed; break; // Wave
-                case 8: offset = vec2(-toCenter.y, toCenter.x) * speed * texel.x * 2.0; break; // Swirl
-                case 9: offset = (vec2(-toCenter.y, toCenter.x) + normalize(toCenter)*0.5) * speed * texel.x * 2.0; break; // Vortex
-                case 10: { // Laser
-                    float beam = step(0.95, fract(uv.y * 10.0 + time * 0.5));
-                    offset.x = beam * 10.0 * texel.x * speed;
-                    break;
-                }
-                case 11: { // Zipper
-                    float fragY = uv.y * iResolution.y;
-                    float dir = (mod(fragY, 4.0) < 2.0) ? 1.0 : -1.0;
-                    offset.x = dir * 2.0 * texel.x * speed;
-                    break;
-                }
-                case 12: offset.y = (uv.x - center.x) * speed * texel.y * 4.0; break; // Shear
-                case 13: { // Grid
-                    vec2 grid = step(0.9, fract(uv * 20.0));
-                    offset = vec2(grid.y, grid.x) * speed * texel * 2.0;
-                    break;
-                }
-                case 14: offset = vec2(sin(uv.y*50.0), cos(uv.x*50.0)) * speed * texel; break; // Cross
-                case 15: offset.y = sin(time * 5.0) * speed * texel.y * 4.0; break; // Bounce
-                case 16: offset = (vec2(random(uv+time), random(uv-time)) - 0.5) * speed * texel * 4.0; break; // Shiver
-                case 17: if(random(vec2(floor(uv.x*10.0), floor(time*5.0))) > 0.8) offset.y = (random(uv) - 0.5) * speed * texel.y * 20.0; break; // Glitch V
-                case 18: if(random(vec2(floor(uv.y*10.0), floor(time*5.0))) > 0.8) offset.x = (random(uv) - 0.5) * speed * texel.x * 20.0; break; // Glitch H
-                case 19: offset = vec2(sin(uv.y * 20.0 + time), cos(uv.x * 20.0 + time)) * speed * texel * 2.0; break; // Warp
-                case 20: offset = normalize(toCenter) * smoothstep(0.5, 0.0, dist) * speed * texel * 4.0; break; // Bulge
-                case 21: offset = -normalize(toCenter) * smoothstep(0.5, 0.0, dist) * speed * texel * 4.0; break; // Pinch
-                case 22: offset = normalize(toCenter) * sin(dist * 50.0 - time * 5.0) * speed * texel * 2.0; break; // Ripple
-                case 23: { // Twist
-                     float ang = dist * 10.0;
-                     float s = sin(ang); float c = cos(ang);
-                     vec2 rot = vec2(toCenter.x*c - toCenter.y*s, toCenter.x*s + toCenter.y*c);
-                     offset = (rot - toCenter) * speed * 0.05 * texel;
-                     break;
-                }
-                case 24: { // Scan
-                     float bar = step(0.9, 1.0 - abs(fract(uv.y + time * 0.2) - 0.5) * 2.0);
-                     offset.x = bar * speed * texel.x * 5.0;
-                     break;
-                }
-                case 25: { // Slide
-                     float row = floor(uv.y * 20.0);
-                     float slide = step(0.5, random(vec2(row, 0.0))) * 2.0 - 1.0;
-                     offset.x = slide * speed * texel.x;
-                     break;
-                }
-                case 26: { // Drip
-                     float viscous = snoise(vec2(uv.x * 20.0, 0.0)) * 0.5 + 0.5;
-                     offset.y = -(viscous + 0.5) * speed * texel.y * 2.0;
-                     break;
-                }
-                case 27: offset.x = (random(vec2(0.0, uv.y)) - 0.5) * speed * texel.x * 10.0; break; // Shred
-                
-                // --- NEW UV EFFECTS ---
-                case 28: offset = vec2(sin(uv.y * 50.0 + time*5.0), 0.0) * texel * speed; break; // WaveDistort
-                case 29: { // Pixelate (UV snap) - approximated as offset
-                     vec2 grid = floor(uv * 50.0) / 50.0;
-                     offset = (grid - uv) * 0.5 * speed; 
-                     break;
-                }
-                case 30: { // Melting Lines
-                     float m = noise(vec2(uv.x * 20.0, time * 0.5));
-                     offset.y = -m * texel.y * 5.0 * speed;
-                     break;
-                }
-                case 31: { // Tear
-                     if (abs(uv.y - 0.5) < 0.01) offset.x = speed * texel.x * 50.0;
-                     break;
-                }
-                case 32: { // Barrel
-                     offset = -normalize(toCenter) * pow(dist, 2.0) * speed * 0.1;
-                     break;
-                }
-                case 33: { // Slit Scan
-                     float slit = step(0.98, sin(uv.y * 100.0 + time));
-                     offset.x = slit * speed * texel.x * 10.0;
-                     break;
-                }
-                case 34: { // Block Displacement
-                     vec2 blocks = floor(uv * 10.0);
-                     float r = random(blocks + floor(time));
-                     offset = (vec2(r) - 0.5) * texel * 10.0 * speed;
-                     break;
-                }
-                case 35: { // Jitter
-                     offset = (vec2(random(uv+time), random(uv-time)) - 0.5) * texel * speed * 4.0; // Fast jitter
-                     break;
-                }
-                case 36: { // Solitaire
-                     if (random(vec2(floor(time*10.0), 0.0)) > 0.9) 
-                        offset = vec2(speed * texel.x * 4.0, -speed * texel.y * 4.0);
-                     break;
-                }
-                default: break; 
+            bool insideBox(vec2 uv, vec4 rect) {
+                return uv.x >= rect.x && uv.x < rect.x + rect.z && uv.y >= rect.y && uv.y < rect.y + rect.w;
             }
-            return offset;
-        }
 
-        void main() {
-            vec2 uv = gl_FragCoord.xy / iResolution.xy;
-            vec2 texel = 1.0 / iResolution.xy;
-            vec2 totalOffset = vec2(0.0);
-            float borderDist = 1.0;
-            int activeColorEffect = -1; // No effect
-            
-            for(int i = 0; i < 32; i++) {
-                vec4 rect = u_rects[i];
-                if (rect.z <= 0.0001) continue;
+            vec2 rotateVector(vec2 v, int r) {
+                if (r == 1) return vec2(-v.y, v.x);
+                if (r == 2) return vec2(-v.x, -v.y);
+                if (r == 3) return vec2(v.y, -v.x);
+                return v;
+            }
 
-                float d = min(min(abs(uv.x - rect.x), abs(uv.x - (rect.x + rect.z))),
-                              min(abs(uv.y - rect.y), abs(uv.y - (rect.y + rect.w))));
+            vec2 wrapRect(vec2 p, vec4 r) {
+                return r.xy + mod(p - r.xy, r.zw);
+            }
+
+            void main() {
+                vec2 uv = gl_FragCoord.xy / iResolution.xy;
+                vec2 texel = 1.0 / iResolution.xy;
                 
-                if (insideBox(uv, rect)) {
-                    borderDist = min(borderDist, d);
-                    vec2 center = rect.xy + rect.zw * 0.5;
-                    vec2 toCenter = center - uv;
-                    float dist = length(toCenter);
-                    
-                    int eid = u_effects[i];
-                    
-                    // IF EID >= 100, IT IS A COLOR EFFECT
-                    if (eid >= 100) {
-                        activeColorEffect = eid;
-                    } else {
-                        // ELSE IT IS A DISPLACEMENT EFFECT
-                        vec2 offset = getDisplacement(eid, uv, center, dist, toCenter, texel, u_speeds[i], iTime);
-                        offset = rotateVector(offset, u_rotations[i]);
+                vec2 totalOffset = vec2(0.0);
+                int activeEffect = -1;
+                float speed = 0.0;
+                int palette = -1;
+                vec4 activeRect = vec4(0.0);
+                vec2 activeVel = vec2(0.0);
+                vec2 calcUV = uv; 
+
+                for(int i = 0; i < 32; i++) {
+                    vec4 rect = u_rects[i];
+                    if (rect.z <= 0.0001) continue;
+
+                    if (insideBox(uv, rect)) {
+                        int effect = u_effects[i];
+                        activeEffect = effect;
+                        speed = u_speeds[i];
+                        int rotation = u_rotations[i];
+                        palette = u_palettes[i];
+                        
+                        activeRect = rect;
+                        activeVel = u_velocities[i];
+                        float scale = u_scales[i];
+                        
+                        vec2 center = rect.xy + rect.zw * 0.5;
+                        
+                        vec2 eUV = calcUV * scale;
+                        vec2 eCenter = center * scale;
+                        vec2 toCenter = eCenter - eUV;
+                        float dist = length(toCenter);
+                        vec2 offset = vec2(0.0);
+
+                        if (effect == 0) offset.y = -2.0 * texel.y * speed;
+                        else if (effect == 1) offset.y = 2.0 * texel.y * speed;
+                        else if (effect == 2) offset.x = 2.0 * texel.x * speed;
+                        else if (effect == 3) {
+                            vec2 nCoord = eUV * 4.0 + iTime * 0.02; 
+                            float ang = noise(nCoord) * 6.28 * 2.0;
+                            offset = vec2(cos(ang), sin(ang)) * texel * 1.5 * speed;
+                        }
+                        else if (effect == 4) offset = normalize(toCenter) * texel * speed * 1.5;
+                        else if (effect == 6) {
+                            if (mod(iTime * 20.0, 10.0) < 2.0) offset.x = (random(eUV + iTime) - 0.5) * 15.0 * texel.x;
+                        }
+                        else if (effect == 7) offset.y = sin(eUV.x * 12.0 + iTime * 1.0) * 4.0 * texel.y * speed;
+                        else if (effect == 8) offset = vec2(-toCenter.y, toCenter.x) * speed * texel.x * 2.0;
+                        else if (effect == 9) offset = (vec2(-toCenter.y, toCenter.x) + normalize(toCenter)*0.5) * speed * texel.x * 2.0;
+                        else if (effect == 10) {
+                            float beam = step(0.95, fract(eUV.y * 10.0 + iTime * 0.5));
+                            offset.x = beam * 10.0 * texel.x * speed;
+                        }
+                        else if (effect == 11) {
+                            float fragY = eUV.y * iResolution.y;
+                            float dir = (mod(fragY, 4.0) < 2.0) ? 1.0 : -1.0;
+                            offset.x = dir * 2.0 * texel.x * speed;
+                        }
+                        else if (effect == 12) offset.y = (eUV.x - eCenter.x) * speed * texel.y * 4.0;
+                        else if (effect == 13) {
+                            vec2 grid = step(0.9, fract(eUV * 20.0));
+                            offset = vec2(grid.y, grid.x) * speed * texel * 2.0;
+                        }
+                        else if (effect == 14) offset = vec2(sin(eUV.y*50.0), cos(eUV.x*50.0)) * speed * texel * 1.0;
+                        else if (effect == 15) offset.y = sin(iTime * 5.0) * speed * texel.y * 4.0;
+                        else if (effect == 16) offset = (vec2(random(eUV+iTime), random(eUV-iTime)) - 0.5) * speed * texel * 4.0;
+                        else if (effect == 17) {
+                            if(random(vec2(floor(eUV.x*10.0), floor(iTime*5.0))) > 0.8) offset.y = (random(eUV) - 0.5) * speed * texel.y * 10.0;
+                        }
+                        else if (effect == 18) {
+                            if(random(vec2(floor(eUV.y*10.0), floor(iTime*5.0))) > 0.8) offset.x = (random(eUV) - 0.5) * speed * texel.x * 10.0;
+                        }
+                        else if (effect == 19) offset = vec2(sin(eUV.y * 20.0 + iTime), cos(eUV.x * 20.0 + iTime)) * speed * texel * 1.0;
+                        else if (effect == 20) offset = normalize(toCenter) * smoothstep(0.5, 0.0, dist) * speed * texel * 2.0;
+                        else if (effect == 21) offset = -normalize(toCenter) * smoothstep(0.5, 0.0, dist) * speed * texel * 2.0;
+                        else if (effect == 22) offset = normalize(toCenter) * sin(dist * 50.0 - iTime * 5.0) * speed * texel * 1.0;
+                        else if (effect == 23) {
+                            float ang = dist * 10.0;
+                            float s = sin(ang); float c = cos(ang);
+                            vec2 rot = vec2(toCenter.x*c - toCenter.y*s, toCenter.x*s + toCenter.y*c);
+                            offset = (rot - toCenter) * speed * 0.025 * texel;
+                        }
+                        else if (effect == 24) {
+                            float bar = step(0.9, 1.0 - abs(fract(eUV.y + iTime * 0.2) - 0.5) * 2.0);
+                            offset.x = bar * speed * texel.x * 2.5;
+                        }
+                        else if (effect == 25) {
+                            float row = floor(eUV.y * 20.0);
+                            float slide = step(0.5, random(vec2(row, 0.0))) * 2.0 - 1.0;
+                            offset.x = slide * speed * texel.x * 0.5;
+                        }
+                        else if (effect == 26) {
+                            float viscous = noise(vec2(eUV.x * 20.0, 0.0));
+                            offset.y = -(viscous + 0.5) * speed * texel.y * 1.0;
+                        }
+                        else if (effect == 27) {
+                            offset.x = (random(vec2(0.0, eUV.y)) - 0.5) * speed * texel.x * 5.0;
+                        }
+                        else if (effect == 32) {
+                            vec2 block = floor(eUV * 30.0) / 30.0;
+                            float angle = noise(block * 5.0 + iTime * 0.5) * 6.28;
+                            float drag = step(0.6, random(block + floor(iTime * 4.0))); 
+                            offset = vec2(cos(angle), sin(angle)) * texel * speed * 8.0 * drag;
+                        }
+                        
+                        offset = rotateVector(offset, rotation);
                         totalOffset += offset;
+                        break;
                     }
                 }
+
+                vec3 pColor = vec3(1.0);
+                if (palette == 0) pColor = vec3(1.0, 1.0, 0.0);      
+                else if (palette == 1) pColor = vec3(0.0, 0.5, 1.0); 
+                else if (palette == 2) pColor = vec3(1.0, 0.1, 0.1); 
+                else if (palette == 3) pColor = vec3(1.0, 0.0, 1.0); 
+                else if (palette == 4) pColor = vec3(0.0, 1.0, 0.0); 
+                else if (palette == 5) pColor = vec3(1.0, 0.5, 0.0); 
+                else if (palette == 6) pColor = vec3(0.5, 0.0, 1.0); 
+
+                vec2 sampleUV = calcUV - totalOffset;
+                vec4 prevRect = activeRect;
+
+                if (activeEffect != -1) {
+                    prevRect = vec4(activeRect.xy - activeVel, activeRect.zw);
+                    sampleUV -= activeVel;
+                    sampleUV = wrapRect(sampleUV, prevRect);
+                } else {
+                    float n1 = noise(calcUV * 3.0 + iTime * 0.1);
+                    float n2 = noise(calcUV * 3.0 - iTime * 0.15);
+                    vec2 bgDrift = vec2(cos(n1 * 6.28), sin(n2 * 6.28)) * texel * 2.0;
+                    sampleUV -= bgDrift;
+                }
+
+                if (u_pixelSorting > 0.5) {
+                    vec4 lookAhead = texture(u_prevFrame, sampleUV);
+                    float brightness = dot(lookAhead.rgb, vec3(0.333));
+                    if (brightness > u_sortThreshold) {
+                        sampleUV.y += texel.y * (2.0 + brightness * 6.0);
+                        if (random(vec2(sampleUV.y * 50.0, iTime)) > 0.92) {
+                            sampleUV.x += (random(vec2(sampleUV.x, iTime)) - 0.5) * texel.x * 10.0;
+                        }
+                    }
+                    if (activeEffect != -1) sampleUV = wrapRect(sampleUV, prevRect);
+                }
+
+                vec4 color = texture(u_prevFrame, sampleUV);
+
+                if (activeEffect == -1) {
+                    color.rgb *= u_feedbackDecay; 
+                }
+
+                if (activeEffect >= 28 && activeEffect <= 31) {
+                    vec2 baseUV = calcUV - activeVel;
+                    
+                    if (activeEffect == 28) { 
+                        if (random(vec2(calcUV.x + iTime, calcUV.y)) < 0.2 * speed) {
+                            float sum = 0.0;
+                            for(int x=-1; x<=1; x++){
+                                for(int y=-1; y<=1; y++){
+                                    if(x==0 && y==0) continue;
+                                    vec3 c = texture(u_prevFrame, wrapRect(baseUV + vec2(x,y)*texel, prevRect)).rgb;
+                                    sum += step(0.1, max(c.r, max(c.g, c.b)));
+                                }
+                            }
+                            vec3 cSelf = texture(u_prevFrame, wrapRect(baseUV, prevRect)).rgb;
+                            float self = step(0.1, max(cSelf.r, max(cSelf.g, cSelf.b)));
+                            if (self > 0.5) {
+                                if (sum < 2.0 || sum > 3.0) color = vec4(0.0,0.0,0.0,1.0);
+                                else color = vec4(pColor, 1.0);
+                            } else {
+                                if (sum > 2.5 && sum < 3.5) color = vec4(pColor, 1.0);
+                                else color = vec4(0.0,0.0,0.0,1.0);
+                            }
+                        } else {
+                            color = texture(u_prevFrame, wrapRect(baseUV, prevRect)); 
+                        }
+                    }
+                    else if (activeEffect == 29) { 
+                        vec3 avg = vec3(0.0);
+                        for(int x=-1; x<=1; x++){
+                            for(int y=-1; y<=1; y++){
+                                avg += texture(u_prevFrame, wrapRect(baseUV + vec2(x,y)*texel, prevRect)).rgb;
+                            }
+                        }
+                        avg /= 9.0;
+                        float feed = (random(calcUV + iTime * 0.1) - 0.5) * 0.05 * speed;
+                        color.rgb = avg * (1.0 + speed * 0.05) - (0.005 * speed) + feed;
+                        color.rgb = mix(color.rgb, pColor * max(color.r, max(color.g, color.b)), 0.1);
+                        color.rgb = clamp(color.rgb, 0.0, 1.0);
+                    }
+                    else if (activeEffect == 30) { 
+                        float sum = 0.0;
+                        for(int x=-1; x<=1; x++){
+                            for(int y=-1; y<=1; y++){
+                                vec3 c = texture(u_prevFrame, wrapRect(baseUV + vec2(x,y)*texel, prevRect)).rgb;
+                                sum += max(c.r, max(c.g, c.b));
+                            }
+                        }
+                        vec3 cSelf = texture(u_prevFrame, wrapRect(baseUV, prevRect)).rgb;
+                        float self = max(cSelf.r, max(cSelf.g, cSelf.b));
+                        
+                        if (sum > 4.0) color = vec4(pColor * (1.0 - self), 1.0);
+                        else if (sum < 1.0) color = vec4(0.0,0.0,0.0,1.0);
+                        else color = vec4(pColor * self, 1.0);
+                        
+                        if (random(vec2(calcUV + iTime)) > 0.99) color = vec4(pColor, 1.0);
+                    }
+                    else if (activeEffect == 31) { 
+                        vec3 cSelf = texture(u_prevFrame, wrapRect(baseUV, prevRect)).rgb;
+                        float state = max(cSelf.r, max(cSelf.g, cSelf.b));
+                        
+                        if (state > 0.9) {
+                            color = vec4(0.0, 0.0, 0.0, 1.0); 
+                        } else if (state > 0.0) {
+                            bool burning = false;
+                            for(int x=-1; x<=1; x++){
+                                for(int y=-1; y<=1; y++){
+                                    vec3 c = texture(u_prevFrame, wrapRect(baseUV + vec2(x,y)*texel, prevRect)).rgb;
+                                    if (max(c.r, max(c.g, c.b)) > 0.9) {
+                                        burning = true;
+                                    }
+                                }
+                            }
+                            if (burning) color = vec4(pColor, 1.0);
+                            else color = vec4(pColor * state, 1.0);
+                            
+                            if (random(vec2(calcUV + iTime)) > (1.0 - 0.0001 * speed)) color = vec4(pColor, 1.0);
+                        } else {
+                            if (random(vec2(calcUV - iTime)) > (1.0 - 0.01 * speed)) color = vec4(pColor * 0.5, 1.0);
+                            else color = vec4(0.0, 0.0, 0.0, 1.0);
+                        }
+                    }
+                }
+
+                if (activeEffect != -1) {
+                    if (u_timeSinceReset < 0.1) {
+                        if (dot(color.rgb, vec3(0.333)) < 0.05 && random(calcUV + iTime) > 0.8) {
+                            color.rgb = pColor;
+                        }
+                    }
+                    if (random(gl_FragCoord.xy - iTime * 1.13) > 0.998) {
+                        float r = random(calcUV + iTime * 2.0);
+                        vec3 val = r > 0.3 ? pColor : vec3(0.0);
+                        color.rgb = mix(color.rgb, val, 0.8);
+                    }
+                }
+
+                if (activeEffect == -1) {
+                    float pulse = sin(iTime * 0.5) * 0.5 + 0.5;
+                    float injectThreshold = mix(0.999, 0.992, pulse); 
+                    
+                    float wave = sin(uv.y * 15.0 + iTime * 2.0) * cos(uv.x * 15.0 - iTime);
+                    if (wave > 0.5) {
+                        injectThreshold -= 0.015; 
+                    }
+
+                    if (random(gl_FragCoord.xy + iTime * 1.2) > injectThreshold) {
+                        float r = random(uv + iTime);
+                        vec3 val = r > 0.3 ? vec3(1.0) : vec3(0.0);
+                        color.rgb = mix(color.rgb, val, 0.7); 
+                        color.a = 1.0;
+                    }
+                }
+
+                fragColorOut = color;
             }
+        `;
+        
+        const drawScreenShaderSource = `#version 300 es
+            precision highp float;
+            precision highp int;
 
-            vec2 sampleUV = uv - totalOffset;
+            uniform vec2 iResolution;
+            uniform float iTime;
+            uniform sampler2D u_frame;
+            uniform float u_sharpenEnabled;
+            uniform float u_grayscale; 
 
-            // Pixel Sorting
-            if (u_pixelSorting > 0.5 && random(uv * iTime) > 0.995) {
-                sampleUV.x += (random(uv) - 0.5) * 0.05;
-            }
-
-            vec4 color = texture(u_prevFrame, sampleUV);
+            uniform vec4 u_rects[32];
+            uniform int u_post_effects[32];
+            uniform float u_seeds[32];
             
-            // APPLY COLOR EFFECT IF ACTIVE
-            if (activeColorEffect >= 100) {
-                 color.rgb = applyColorEffect(activeColorEffect, color.rgb, sampleUV, 0.0, iTime);
+            uniform int u_bg_post_effect;
+            uniform float u_bg_seed;
+
+            out vec4 fragColorOut;
+
+            #define PI 3.14159265359
+            float u_intensity = 1.0;
+
+            float rand(vec2 co){ return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453); }
+
+            vec3 rgb2hsv(vec3 c) {
+                vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+                vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+                vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+                float d = q.x - min(q.w, q.y);
+                float e = 1.0e-10;
+                return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
             }
 
-            color.rgb *= u_feedbackDecay; 
-
-            if (borderDist < 0.002) {
-                color.rgb = vec3(0.0);
+            vec3 hsv2rgb(vec3 c) {
+                vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+                vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+                return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
             }
 
-            // Chance to spawn white noise
-            if (random(gl_FragCoord.xy + iTime * 1.2) > 0.997) {
-                float val = step(0.6, random(uv + iTime)); 
-                color.rgb = mix(color.rgb, vec3(val), 0.5);
-                color.a = 1.0;
+            mat2 rotate2d(float angle) { return mat2(cos(angle), -sin(angle), sin(angle), cos(angle)); }
+            float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+            float snoise(vec3 v) {
+                const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+                const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy));
+                vec3 x0 = v - i + dot(i, C.xxx);
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min(g.xyz, l.zxy);
+                vec3 i2 = max(g.xyz, l.zxy);
+                vec3 x1 = x0 - i1 + C.xxx;
+                vec3 x2 = x0 - i2 + C.yyy;
+                vec3 x3 = x0 - D.yyy;
+                i = mod289(i);
+                vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+                float n_ = 0.142857142857;
+                vec3 ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+                vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_);
+                vec4 x = x_ * ns.x + ns.yyyy;
+                vec4 y = y_ * ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4(x.xy, y.xy);
+                vec4 b1 = vec4(x.zw, y.zw);
+                vec4 s0 = floor(b0)*2.0 + 1.0;
+                vec4 s1 = floor(b1)*2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+                vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+                vec3 p0 = vec3(a0.xy,h.x);
+                vec3 p1 = vec3(a0.zw,h.y);
+                vec3 p2 = vec3(a1.xy,h.z);
+                vec3 p3 = vec3(a1.zw,h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+                p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
             }
 
-            fragColorOut = color;
-        }
+            vec4 getStylizedColor(vec2 uv) {
+                vec4 source = texture(u_frame, uv);
+                if (u_sharpenEnabled > 0.5) {
+                    vec2 pixelStep = 1.0 / iResolution;
+                    vec3 n = texture(u_frame, uv + vec2(0.0, -pixelStep.y)).rgb;
+                    vec3 s = texture(u_frame, uv + vec2(0.0, pixelStep.y)).rgb;
+                    vec3 e = texture(u_frame, uv + vec2(pixelStep.x, 0.0)).rgb;
+                    vec3 w = texture(u_frame, uv + vec2(-pixelStep.x, 0.0)).rgb;
+                    source.rgb = source.rgb * 5.0 - n - s - e - w;
+                }
+                
+                float maxVal = max(source.r, max(source.g, source.b));
+                vec3 color;
+                
+                if (u_grayscale > 0.5) {
+                    float binary = step(0.15, maxVal);
+                    color = vec3(binary);
+                } else {
+                    float binary = step(0.15, maxVal);
+                    vec3 fg = source.rgb / (maxVal + 0.0001); 
+                    color = mix(vec3(0.0), fg, binary);
+                }
+                
+                return vec4(color, 1.0);
+            }
+
+            vec2 getRegionCenter(vec4 region) { return vec2(region.x + region.z / 2.0, region.y + region.w / 2.0); }
+
+            bool insideBox(vec2 uv, vec4 rect) {
+                return uv.x >= rect.x && uv.x < rect.x + rect.z && uv.y >= rect.y && uv.y < rect.y + rect.w;
+            }
+
+            vec4 effect_Invert(vec4 color, float seed) { return vec4(1.0 - color.rgb, color.a); }
+            vec4 effect_ChannelSwap(vec4 color, float seed) {
+                float speed = mix(0.5, 2.0, seed);
+                float time_seed = mod(iTime * speed, 3.0);
+                if (time_seed < 1.0) return vec4(color.g, color.b, color.r, color.a);
+                if (time_seed < 2.0) return vec4(color.b, color.r, color.g, color.a);
+                return vec4(color.g, color.r, color.b, color.a);
+            }
+            vec4 effect_Posterize(vec4 color, float seed) {
+                float speed = mix(2.0, 5.0, seed);
+                float numColors = floor(mix(5.0, 20.0, seed)) + sin(iTime * speed) * 4.0;
+                return floor(color * numColors) / numColors;
+            }
+            vec4 effect_PixelSort(vec2 uv, float seed) {
+                float threshold = mix(0.2, 0.8, seed) + sin(iTime * mix(2.0, 6.0, seed)) * 0.15;
+                float searchDistance = floor(mix(100.0, 700.0, u_intensity * seed));
+                vec2 stepDirection = vec2(1.0 / iResolution.x, 0.0);
+                vec2 final_uv = uv;
+                int maxDist = int(min(150.0, searchDistance));
+                for (int i = 1; i < 150; i++) {
+                    if (i > maxDist) break;
+                    vec2 sample_uv = uv + stepDirection * float(i);
+                    if(sample_uv.x > 1.0) break;
+                    vec4 sample_color = texture(u_frame, sample_uv);
+                    float brightness = (sample_color.r + sample_color.g + sample_color.b) / 3.0;
+                    if (brightness < threshold) { break; }
+                    final_uv = sample_uv;
+                }
+                return getStylizedColor(final_uv);
+            }
+            vec4 effect_Thermal(vec4 color, float seed) {
+                float brightness = (color.r + color.g + color.b) / 3.0;
+                vec3 thermalColor = vec3(1.0, 0.0, 0.0);
+                if (brightness > 0.8) thermalColor = vec3(1.0, 1.0, 1.0);
+                else if (brightness > 0.5) thermalColor = vec3(1.0, 1.0, 0.0);
+                else if (brightness > 0.2) thermalColor = vec3(0.0, 0.0, 1.0);
+                else thermalColor = vec3(0.0, 0.0, 0.0);
+                return mix(color, vec4(thermalColor, color.a), 0.85);
+            }
+            vec4 effect_WaveDistort(vec2 uv, float seed) {
+                vec2 distorted_uv = uv;
+                float freq = mix(10.0, 80.0, seed);
+                float amp = mix(0.02, 0.12, seed) * u_intensity;
+                distorted_uv.x += sin(distorted_uv.y * freq + iTime * 2.0) * amp;
+                return getStylizedColor(distorted_uv);
+            }
+            vec4 effect_RGBShift(vec2 uv, float seed) {
+                float speed = mix(3.0, 8.0, seed);
+                float shift_amount = mix(0.01, 0.06, seed) * u_intensity * (1.0 + sin(iTime * speed) * 0.5);
+                float r = getStylizedColor(vec2(uv.x + shift_amount, uv.y)).r;
+                float g = getStylizedColor(uv).g;
+                float b = getStylizedColor(vec2(uv.x - shift_amount, uv.y)).b;
+                return vec4(r, g, b, 1.0);
+            }
+            vec4 effect_Pixelate(vec2 uv, float seed) {
+                float speed = mix(1.0, 4.0, seed);
+                float block_size = floor(mix(10.0, 200.0, seed) * u_intensity * (1.0 + sin(iTime * speed) * 0.3));
+                if (block_size < 2.0) return getStylizedColor(uv);
+                vec2 block_uv = floor(uv * block_size) / block_size;
+                return getStylizedColor(block_uv);
+            }
+            vec4 effect_Noise(vec4 color, vec2 uv, float seed) {
+                float noise_amount = mix(0.2, 0.7, seed) * u_intensity;
+                float noise = (rand(uv + iTime) - 0.5) * noise_amount;
+                return color + vec4(noise, noise, noise, 0.0);
+            }
+            vec4 effect_Tear(vec2 uv, float seed) {
+                vec2 tear_uv = uv;
+                float tear_prob = mix(0.05, 0.5, seed) * u_intensity;
+                if (rand(vec2(floor(uv.y * 50.0), iTime)) < tear_prob) {
+                   tear_uv.x += (rand(vec2(uv.y, iTime)) - 0.5) * 0.1;
+                }
+                return getStylizedColor(tear_uv);
+            }
+            vec4 effect_Twirl(vec2 uv, vec4 region, float seed) {
+                float speed = mix(1.0, 3.0, seed);
+                vec2 center = getRegionCenter(region);
+                vec2 d = uv - center;
+                float r = length(d);
+                float angle = atan(d.y, d.x);
+                float max_radius = length(vec2(region.z, region.w)) / 2.0;
+                float twirl_strength = mix(2.0, 12.0, seed) * u_intensity * (1.0 + sin(iTime * speed) * 0.2);
+                angle += (1.0 - smoothstep(0.0, max_radius, r)) * twirl_strength;
+                vec2 twirl_uv = center + r * vec2(cos(angle), sin(angle));
+                return getStylizedColor(twirl_uv);
+            }
+            vec4 effect_Shear(vec2 uv, vec4 region, float seed) {
+                float speed = mix(1.0, 3.0, seed);
+                vec2 sheared_uv = uv;
+                float shear_factor = (mix(-0.5, 0.5, seed)) * u_intensity * sin(iTime * speed);
+                float progress = (uv.y - region.y) / region.w;
+                sheared_uv.x += progress * shear_factor;
+                return getStylizedColor(sheared_uv);
+            }
+            vec4 effect_Pinch(vec2 uv, vec4 region, float seed) {
+                float speed = mix(1.0, 3.0, seed);
+                vec2 center = getRegionCenter(region);
+                float pinch_radius = length(vec2(region.z, region.w)) * 0.7;
+                float pinch_amount = mix(-1.0, 1.0, seed) * u_intensity * sin(iTime * speed);
+                vec2 d = uv - center;
+                float dist = length(d);
+                if (dist < pinch_radius) {
+                    float percent = dist / pinch_radius;
+                    d *= mix(1.0, pow(percent, pinch_amount), 0.5);
+                }
+                return getStylizedColor(center + d);
+            }
+            vec4 effect_SlitScan(vec2 uv, float seed) {
+                float scan_pos = fract(iTime + seed);
+                float scan_width = 0.05 * u_intensity;
+                if (abs(uv.y - scan_pos) < scan_width) {
+                     return getStylizedColor(vec2(uv.x, scan_pos));
+                }
+                return getStylizedColor(uv);
+            }
+            vec4 effect_Strobe(vec4 color, float seed) {
+                float speed = mix(20.0, 80.0, seed);
+                float strobe = step(0.5, sin(iTime * speed));
+                return mix(color, vec4(1.0), strobe * u_intensity);
+            }
+            vec4 effect_ChromaticAberration(vec2 uv, float seed) {
+                float speed = mix(2.0, 5.0, seed);
+                float amount = mix(0.001, 0.02, seed) * u_intensity * (1.0 + sin(iTime * speed) * 0.8);
+                float r = getStylizedColor(vec2(uv.x + amount, uv.y + amount)).r;
+                float g = getStylizedColor(vec2(uv.x, uv.y)).g;
+                float b = getStylizedColor(vec2(uv.x - amount, uv.y - amount)).b;
+                return vec4(r, g, b, 1.0);
+            }
+            vec4 effect_PixelStretch(vec2 uv, float seed) {
+                vec4 color = getStylizedColor(uv);
+                float brightness = luma(color.rgb);
+                float threshold = mix(0.2, 0.8, seed);
+                float stretch = smoothstep(threshold, 1.0, brightness) * (sin(iTime * mix(5.0, 20.0, seed) + uv.y * 10.0) + 1.0) * 2.0 * u_intensity;
+                vec2 stretched_uv = vec2(uv.x + stretch, uv.y);
+                return getStylizedColor(stretched_uv);
+            }
+            vec4 effect_Dither(vec4 color, vec2 uv, float seed) {
+                mat4 bayerMatrix = mat4(
+                    0.0, 8.0, 2.0, 10.0,
+                    12.0, 4.0, 14.0, 6.0,
+                    3.0, 11.0, 1.0, 9.0,
+                    15.0, 7.0, 13.0, 5.0
+                ) / 16.0;
+                float brightness = (color.r + color.g + color.b) / 3.0;
+                vec2 coord = floor(mod(gl_FragCoord.xy, 4.0));
+                float threshold = bayerMatrix[int(coord.x)][int(coord.y)];
+                vec3 ditheredColor = vec3(step(threshold, brightness));
+                return mix(color, vec4(ditheredColor, color.a), u_intensity * mix(0.5, 1.0, seed));
+            }
+            vec4 effect_SlitScanVertical(vec2 uv, float seed) {
+                float scan_pos = fract(iTime + seed);
+                float scan_width = 0.05 * u_intensity;
+                if (abs(uv.x - scan_pos) < scan_width) {
+                     return getStylizedColor(vec2(scan_pos, uv.y));
+                }
+                return getStylizedColor(uv);
+            }
+            vec4 effect_Scanlines(vec4 color, vec2 uv, float seed) {
+                float frequency = mix(800.0, 2000.0, seed); 
+                float intensity = mix(0.05, 0.2, seed) * u_intensity;
+                float scanline = sin((uv.y + iTime * 0.1) * frequency) * intensity;
+                return color - scanline;
+            }
+            vec4 effect_Jitter(vec2 uv, float seed) {
+                float speed = mix(20.0, 50.0, seed);
+                float bands = floor(mix(10.0, 40.0, seed));
+                float band_index = floor(uv.y * bands);
+                float strength = mix(0.01, 0.15, seed) * u_intensity;
+                float jitter_rand = rand(vec2(band_index, floor(iTime * speed)));
+                float offset_x = (jitter_rand - 0.5) * 2.0 * strength;
+                vec2 jittered_uv = uv + vec2(offset_x, 0.0);
+                return getStylizedColor(jittered_uv);
+            }
+            vec4 effect_HueCycle(vec4 color, float seed) {
+                vec3 hsv = rgb2hsv(color.rgb);
+                float speed = mix(0.1, 0.5, seed);
+                hsv.x = fract(hsv.x + iTime * speed);
+                vec3 rgb = hsv2rgb(hsv);
+                return vec4(rgb, color.a);
+            }
+            vec4 effect_CMYKHalftone(vec2 uv, float seed) {
+                float speed = mix(0.1, 0.5, seed);
+                float scale = mix(800.0, 2000.0, seed) * u_intensity;
+                vec3 color = getStylizedColor(uv).rgb;
+                float k = 1.0 - max(color.r, max(color.g, color.b));
+                vec3 cmy = (1.0 - color - k) / (1.0 - k + 1e-10);
+                vec3 finalColor = vec3(1.0);
+                
+                float cyan = 1.0 - step(sqrt(cmy.x), distance(fract(rotate2d(0.2618 + iTime * speed) * uv * scale), vec2(0.5)));
+                finalColor = min(finalColor, vec3(1.0, 0.0, 0.0) * cyan + vec3(1.0) * (1.0 - cyan));
+
+                float magenta = 1.0 - step(sqrt(cmy.y), distance(fract(rotate2d(1.309 - iTime * speed * 0.5) * uv * scale), vec2(0.5)));
+                finalColor = min(finalColor, vec3(0.0, 1.0, 0.0) * magenta + vec3(1.0) * (1.0 - magenta));
+
+                float yellow = 1.0 - step(sqrt(cmy.z), distance(fract(rotate2d(0.0) * uv * scale), vec2(0.5)));
+                finalColor = min(finalColor, vec3(0.0, 0.0, 1.0) * yellow + vec3(1.0) * (1.0 - yellow));
+
+                float black = 1.0 - step(sqrt(k), distance(fract(rotate2d(0.7854 + iTime * speed * 0.2) * uv * scale), vec2(0.5)));
+                finalColor = min(finalColor, vec3(1.0, 1.0, 1.0) * black + vec3(0.0) * (1.0 - black));
+
+                return vec4(1.0 - finalColor, 1.0);
+            }
+            vec4 effect_LCD(vec2 uv, float seed) {
+                float scale = mix(150.0, 500.0, fract(seed * 1.234));
+                vec2 pixel_uv = uv * scale;
+                vec2 pixel_frac = fract(pixel_uv);
+                float pixel_width = 1.0 / scale;
+                vec2 red_uv_offset = vec2(pixel_width * 0.333, 0.0);
+                vec2 blue_uv_offset = vec2(-pixel_width * 0.333, 0.0);
+                
+                float r = getStylizedColor(uv - red_uv_offset).r;
+                float g = getStylizedColor(uv).g;
+                float b = getStylizedColor(uv - blue_uv_offset).b;
+                
+                vec3 color = vec3(r, g, b);
+                float grid_intensity = mix(0.3, 0.8, fract(seed * 2.345));
+                if (pixel_frac.x < 0.1 || pixel_frac.y < 0.1) {
+                    color *= grid_intensity;
+                }
+                return vec4(color, 1.0);
+            }
+            vec4 effect_8Bit(vec4 color, float seed) {
+                float speed = mix(2.0, 5.0, seed);
+                float numColors = floor(mix(2.0, 8.0, seed) + sin(iTime * speed) * 2.0);
+                return floor(color * numColors) / numColors;
+            }
+            vec4 effect_ASCII(vec2 uv, float seed) {
+                float speed = mix(0.5, 2.0, seed);
+                float scale = mix(50.0, 150.0, seed) * (1.0 + sin(iTime * speed) * 0.1);
+                vec2 charUV = floor(uv * scale) / scale;
+                vec4 color = getStylizedColor(charUV);
+                float brightness = (color.r + color.g + color.b) / 3.0;
+                
+                float charIndex = floor(brightness * 10.0);
+                vec3 finalColor = vec3(0.0);
+                if (charIndex > 8.0) finalColor = vec3(1.0);
+                else if (charIndex > 6.0) finalColor = vec3(0.8);
+                else if (charIndex > 4.0) finalColor = vec3(0.6);
+                else if (charIndex > 2.0) finalColor = vec3(0.4);
+                else if (charIndex > 0.0) finalColor = vec3(0.2);
+
+                return vec4(finalColor, 1.0);
+            }
+            vec4 effect_PerlinNoise(vec2 uv, float seed) {
+                float scale = mix(5.0, 25.0, seed);
+                float speed = mix(0.1, 0.5, seed);
+                float noise = snoise(vec3(uv * scale, iTime * speed));
+                vec2 distortedUv = uv + vec2(noise, noise) * 0.1 * u_intensity;
+                return getStylizedColor(distortedUv);
+            }
+            vec4 effect_LumaMesh(vec2 uv, float seed) {
+                float speed = mix(0.5, 2.0, seed);
+                float gridSize = mix(10.0, 40.0, seed) * (1.0 + u_intensity * 2.0) * (1.0 + sin(iTime * speed) * 0.1);
+                vec2 pixelStep = 1.0 / iResolution;
+                vec4 color = getStylizedColor(uv);
+                
+                float currentLuma = luma(color.rgb);
+                float rightLuma = luma(getStylizedColor(uv + vec2(pixelStep.x, 0.0)).rgb);
+                float bottomLuma = luma(getStylizedColor(uv + vec2(0.0, pixelStep.y)).rgb);
+                
+                float diffX = abs(currentLuma - rightLuma);
+                float diffY = abs(currentLuma - bottomLuma);
+                
+                vec2 gridUV = fract(uv * gridSize);
+                float lineThickness = 0.1;
+                float lineX = smoothstep(lineThickness, 0.0, abs(gridUV.x - 0.5) * 2.0);
+                float lineY = smoothstep(lineThickness, 0.0, abs(gridUV.y - 0.5) * 2.0);
+                
+                float threshold = mix(0.02, 0.25, 1.0 - seed);
+                float mesh = 0.0;
+                if (diffX > threshold) mesh = max(mesh, lineY);
+                if (diffY > threshold) mesh = max(mesh, lineX);
+                
+                float vividness = pow(mesh, 0.5) * 2.0;
+                return mix(color, vec4(0.0, 1.0, 0.2, 1.0), clamp(vividness, 0.0, 1.0) * u_intensity);
+            }
+            vec4 effect_VHS(vec2 uv, vec4 color, float seed) {
+                float shift = mix(0.01, 0.05, seed) * u_intensity;
+                float r = getStylizedColor(vec2(uv.x + shift, uv.y)).r;
+                float b = getStylizedColor(vec2(uv.x - shift, uv.y)).b;
+                vec3 shiftedColor = vec3(r, color.g, b);
+
+                float speed = mix(1.0, 4.0, seed);
+                float distortion = sin(uv.y * 300.0 + iTime * speed) * 0.02 * u_intensity;
+                if (rand(vec2(floor(uv.y * 25.0), iTime * 0.5)) < 0.15 * u_intensity) {
+                    distortion *= 15.0;
+                }
+                vec2 distortedUv = uv + vec2(distortion, 0.0);
+                vec4 finalColor = getStylizedColor(distortedUv);
+                finalColor.rgb = mix(finalColor.rgb, shiftedColor, 0.6);
+
+                float scanlineIntensity = mix(0.1, 0.25, seed);
+                float scanline = sin(uv.y * iResolution.y * 0.9) * scanlineIntensity;
+                finalColor.rgb -= scanline;
+
+                float noiseAmount = mix(0.15, 0.5, seed) * u_intensity;
+                finalColor.rgb += (rand(uv + iTime) - 0.5) * noiseAmount;
+
+                float desaturation = mix(0.3, 0.7, seed);
+                float avgColor = (finalColor.r + finalColor.g + finalColor.b) / 3.0;
+                finalColor.rgb = mix(finalColor.rgb, vec3(avgColor), desaturation);
+
+                return clamp(finalColor, 0.0, 1.0);
+            }
+            vec4 effect_FindEdges(vec2 uv, float seed) {
+                float threshold = mix(0.1, 0.5, seed);
+                vec2 pixelStep = 1.0 / iResolution;
+                float l = luma(getStylizedColor(uv - pixelStep).rgb);
+                float r = luma(getStylizedColor(uv + pixelStep).rgb);
+                float u = luma(getStylizedColor(uv - vec2(0.0, pixelStep.y)).rgb);
+                float d = luma(getStylizedColor(uv + vec2(0.0, pixelStep.y)).rgb);
+                float edge = pow(pow(r - l, 2.0) + pow(u - d, 2.0), 0.5);
+                return vec4(vec3(step(threshold, edge)), 1.0);
+            }
+            vec4 effect_MovingLines(vec4 color, vec2 uv, float seed) {
+                float density = mix(0.1, 1.5, fract(seed * 10.0));
+                float speed = mix(0.1, 2.0, fract(seed * 100.0));
+                float direction = step(0.5, fract(seed * 1000.0));
+                float color_mode = step(0.5, fract(seed * 10000.0));
+                float fade_speed_multiplier = floor(mix(1.0, 4.0, fract(seed * 12345.0)));
+
+                float phaseStart = iTime * speed;
+                float brightness = luma(color.rgb);
+                float coord = (direction > 0.5) ? (1.0 - uv.x) : uv.x;
+                float phase = brightness * density + phaseStart;
+                float line_thickness = 0.05 * u_intensity;
+                float line = 1.0 - smoothstep(0.0, line_thickness, fract(phase));
+
+                float fade = abs(sin(iTime * PI * 0.5 * fade_speed_multiplier));
+                line *= fade;
+
+                vec3 line_color;
+                if (color_mode > 0.5) {
+                    line_color = hsv2rgb(vec3(fract(seed * 1.23), 0.8, 1.0));
+                } else {
+                    line_color = vec3(1.0);
+                }
+                return mix(color, vec4(line_color, 1.0), line);
+            }
+            vec4 effect_SolitaireWin(vec2 uv, float seed) {
+                float card_count = 10.0 + floor(fract(seed * 123.456) * 40.0);
+                float fall_speed = 0.5 + fract(seed * 456.789) * 4.5;
+                float bounce_height = 0.1 + fract(seed * 789.123) * 0.9;
+                float rotation_chance = fract(seed * 321.987);
+                vec2 final_uv = uv;
+
+                if (rotation_chance < 0.5) { 
+                    float card_index = floor(uv.y * card_count);
+                    float time_offset = card_index * 0.2;
+                    float local_time = iTime * fall_speed - time_offset;
+                    if (local_time > 0.0) {
+                        float bounce = abs(sin(local_time * PI)) * bounce_height * exp(-local_time * 0.5);
+                        float y_pos = 1.0 - local_time + bounce;
+                        float card_top_edge = (card_index + 1.0) / card_count;
+                        if (uv.y > y_pos && uv.y < card_top_edge) {
+                            final_uv = vec2(uv.x, y_pos);
+                        }
+                    }
+                } else {
+                    float card_index = floor(uv.x * card_count);
+                    float time_offset = card_index * 0.2;
+                    float local_time = iTime * fall_speed - time_offset;
+                    if (local_time > 0.0) {
+                        float bounce = abs(sin(local_time * PI)) * bounce_height * exp(-local_time * 0.5);
+                        float x_pos = 1.0 - local_time + bounce;
+                        float card_right_edge = (card_index + 1.0) / card_count;
+                        if (uv.x > x_pos && uv.x < card_right_edge) {
+                            final_uv = vec2(x_pos, uv.y);
+                        }
+                    }
+                }
+                return getStylizedColor(final_uv);
+            }
+            vec4 effect_PencilSketch(vec2 uv, float seed) {
+                vec2 pixelStep = 1.0 / iResolution;
+                vec4 originalColor = getStylizedColor(uv);
+                float luma_base = luma(originalColor.rgb);
+                float blur_strength = mix(1.0, 4.0, seed);
+                float luma_inverted_blurred = 0.0;
+                
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(-1.0, -1.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(0.0, -1.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(1.0, -1.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(-1.0, 0.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(0.0, 0.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(1.0, 0.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(-1.0, 1.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(0.0, 1.0) * blur_strength).rgb));
+                luma_inverted_blurred += (1.0 - luma(texture(u_frame, uv + pixelStep * vec2(1.0, 1.0) * blur_strength).rgb));
+                luma_inverted_blurred /= 9.0;
+                
+                float sketch = luma_base / (1.0 - luma_inverted_blurred + 0.001);
+                float noise = rand(uv) * 0.1;
+                vec3 sketch_color = vec3(clamp(sketch - noise, 0.0, 1.0));
+                return mix(originalColor, vec4(sketch_color, 1.0), u_intensity);
+            }
+            vec4 effect_Glow(vec2 uv, float seed) {
+                vec4 originalColor = getStylizedColor(uv);
+                vec3 finalColor = vec3(0.0);
+                float radius = mix(2.0, 6.0, seed);
+                float brightness_threshold = mix(0.6, 0.95, 1.0 - seed);
+                float glow_intensity = mix(0.5, 1.5, seed) * u_intensity;
+                vec2 pixelStep = 1.0 / iResolution;
+                int r = int(radius);
+                float samples = 0.0;
+                for (int x = -6; x <= 6; x++) {
+                    if (x < -r || x > r) continue;
+                    for (int y = -6; y <= 6; y++) {
+                        if (y < -r || y > r) continue;
+                        vec2 offset = vec2(float(x), float(y)) * pixelStep;
+                        vec3 sampleColor = texture(u_frame, uv + offset).rgb;
+                        float brightness = luma(sampleColor);
+                        if (brightness > brightness_threshold) {
+                            finalColor += sampleColor;
+                        }
+                        samples += 1.0;
+                    }
+                }
+                finalColor /= max(samples, 1.0);
+                return vec4(originalColor.rgb + finalColor * glow_intensity, 1.0);
+            }
+            vec4 effect_BarrelDistortion(vec2 uv, float seed) {
+                vec2 center = vec2(0.5, 0.5);
+                vec2 to_center = uv - center;
+                float dist = dot(to_center, to_center);
+                float strength = mix(-0.5, 0.5, seed) * u_intensity * (1.0 + sin(iTime * mix(1.0, 3.0, seed)) * 0.2);
+                vec2 distorted_uv = uv + to_center * (1.0 - strength) * dist;
+                return getStylizedColor(distorted_uv);
+            }
+            vec4 effect_MeltingLines(vec2 uv, float seed) {
+                float melt_speed = mix(0.1, 1.0, seed);
+                float melt_amount = texture(u_frame, vec2(uv.x, uv.y - fract(iTime * melt_speed))).r * 0.1 * u_intensity;
+                vec2 melted_uv = uv - vec2(0.0, melt_amount);
+                return getStylizedColor(melted_uv);
+            }
+            vec4 effect_BlockDisplacement(vec2 uv, float seed) {
+                float grid_size = floor(mix(10.0, 50.0, seed));
+                vec2 block_uv = floor(uv * grid_size) / grid_size;
+                float displacement_strength = mix(0.01, 0.2, seed) * u_intensity;
+                vec2 displacement = vec2(rand(block_uv) - 0.5, rand(block_uv + 0.1) - 0.5) * displacement_strength;
+                return getStylizedColor(uv + displacement);
+            }
+            
+            vec4 applyEffect(int pe, float seed, vec2 uv, vec4 cellRect, vec4 baseColor) {
+                if (pe == 0) return effect_Invert(baseColor, seed);
+                else if (pe == 1) return effect_ChannelSwap(baseColor, seed);
+                else if (pe == 2) return effect_Posterize(baseColor, seed);
+                else if (pe == 3) return effect_PixelSort(uv, seed);
+                else if (pe == 4) return effect_Thermal(baseColor, seed);
+                else if (pe == 5) return effect_WaveDistort(uv, seed);
+                else if (pe == 6) return effect_RGBShift(uv, seed);
+                else if (pe == 7) return effect_Pixelate(uv, seed);
+                else if (pe == 8) return effect_Noise(baseColor, uv, seed);
+                else if (pe == 9) return effect_Tear(uv, seed);
+                else if (pe == 10) return effect_Twirl(uv, cellRect, seed);
+                else if (pe == 11) return effect_Shear(uv, cellRect, seed);
+                else if (pe == 12) return effect_Pinch(uv, cellRect, seed);
+                else if (pe == 13) return effect_SlitScan(uv, seed);
+                else if (pe == 14) return effect_Strobe(baseColor, seed);
+                else if (pe == 15) return effect_ChromaticAberration(uv, seed);
+                else if (pe == 16) return effect_PixelStretch(uv, seed);
+                else if (pe == 17) return effect_Dither(baseColor, uv, seed);
+                else if (pe == 18) return effect_SlitScanVertical(uv, seed);
+                else if (pe == 19) return effect_Scanlines(baseColor, uv, seed);
+                else if (pe == 20) return effect_Jitter(uv, seed);
+                else if (pe == 21) return effect_HueCycle(baseColor, seed);
+                else if (pe == 22) return effect_CMYKHalftone(uv, seed);
+                else if (pe == 23) return effect_LCD(uv, seed);
+                else if (pe == 24) return effect_8Bit(baseColor, seed);
+                else if (pe == 25) return effect_ASCII(uv, seed);
+                else if (pe == 26) return effect_PerlinNoise(uv, seed);
+                else if (pe == 27) return effect_LumaMesh(uv, seed);
+                else if (pe == 28) return effect_VHS(uv, baseColor, seed);
+                else if (pe == 29) return effect_FindEdges(uv, seed);
+                else if (pe == 30) return effect_MovingLines(baseColor, uv, seed);
+                else if (pe == 31) return effect_SolitaireWin(uv, seed);
+                else if (pe == 32) return effect_PencilSketch(uv, seed);
+                else if (pe == 33) return effect_Glow(uv, seed);
+                else if (pe == 34) return effect_BarrelDistortion(uv, seed);
+                else if (pe == 35) return effect_MeltingLines(uv, seed);
+                else if (pe == 36) return effect_BlockDisplacement(uv, seed);
+                return baseColor;
+            }
+
+            void main() {
+                vec2 uv = gl_FragCoord.xy / iResolution.xy;
+                
+                int activeCell = -1;
+                vec4 cellRect = vec4(0.0);
+                float distToEdgePx = 10000.0;
+                
+                for(int i=0; i<32; i++) {
+                    vec4 r = u_rects[i];
+                    if(r.z < 0.001) continue;
+                    if(insideBox(uv, r)) {
+                        activeCell = i;
+                        cellRect = r;
+                        float dx = min(abs(uv.x - r.x), abs(uv.x - (r.x + r.z)));
+                        float dy = min(abs(uv.y - r.y), abs(uv.y - (r.y + r.w)));
+                        distToEdgePx = min(dx * iResolution.x, dy * iResolution.y);
+                        break; 
+                    }
+                }
+                
+                vec4 color = vec4(0.0);
+                vec4 baseColor = getStylizedColor(uv);
+                
+                if (activeCell != -1) {
+                    // Cell-specific Effect
+                    int pe = u_post_effects[activeCell];
+                    float seed = u_seeds[activeCell];
+                    color = applyEffect(pe, seed, uv, cellRect, baseColor);
+                } else {
+                    // Background Effect
+                    int pe = u_bg_post_effect;
+                    float seed = u_bg_seed;
+                    color = applyEffect(pe, seed, uv, vec4(0.0, 0.0, 1.0, 1.0), baseColor);
+                }
+
+                float borderThickness = 10.0; 
+                if (distToEdgePx < borderThickness) {
+                    color.rgb = vec3(0.0);
+                }
+
+                fragColorOut = color;
+            }
         `;
 
-        const drawScreenShaderSource = `
-        #version 300 es
-        precision highp float;
-        uniform vec2 iResolution;
-        uniform sampler2D u_frame;
-        uniform float u_sharpenEnabled;
-        uniform float u_threshold; 
-
-        out vec4 fragColorOut;
-        
-        // Bayer Matrix 4x4
-        const float bayer[16] = float[](
-            0.0/16.0, 8.0/16.0, 2.0/16.0, 10.0/16.0,
-            12.0/16.0, 4.0/16.0, 14.0/16.0, 6.0/16.0,
-            3.0/16.0, 11.0/16.0, 1.0/16.0, 9.0/16.0,
-            15.0/16.0, 7.0/16.0, 13.0/16.0, 5.0/16.0
-        );
-        
-        float getBayer(vec2 uv) {
-            int x = int(mod(uv.x, 4.0));
-            int y = int(mod(uv.y, 4.0));
-            return bayer[y * 4 + x];
-        }
-
-        void main() {
-            vec2 uv = gl_FragCoord.xy / iResolution.xy;
-            
-            // 1. Chromatic Aberration
-            float aberrationStr = 2.0 / iResolution.x; // Shift by 2 pixels
-            float r = texture(u_frame, uv + vec2(-aberrationStr, 0.0)).r;
-            float g = texture(u_frame, uv).g;
-            float b = texture(u_frame, uv + vec2(aberrationStr, 0.0)).b;
-            vec3 source = vec3(r, g, b);
-
-            // 2. Sharpening
-            if (u_sharpenEnabled > 0.5) {
-                vec2 step = 1.0 / iResolution;
-                // Simple laplacian sharpen roughly preserved for RGB
-                vec3 sum = texture(u_frame, uv + vec2(-step.x, 0.0)).rgb * -1.0 +
-                           texture(u_frame, uv + vec2(0.0, -step.y)).rgb * -1.0 +
-                           texture(u_frame, uv + vec2(step.x, 0.0)).rgb * -1.0 +
-                           texture(u_frame, uv + vec2(0.0, step.y)).rgb * -1.0 +
-                           source * 5.0;
-                source = sum;
-            }
-
-            float lum = dot(source, vec3(0.299, 0.587, 0.114));
-            
-            // 3. Dithering
-            float dither = getBayer(gl_FragCoord.xy);
-            // Mix threshold with dither. 
-            // The closer the lum is to threshold, the more the dither pattern shows.
-            float threshold = u_threshold + (dither - 0.5) * 0.2; // 0.2 strength dither
-            
-            float binary = step(threshold, lum);
-            
-            fragColorOut = vec4(vec3(binary), 1.0);
-        }
-        `;
-
-        // --- WEBGL HELPERS ---
+        // ==========================================
+        // 3. WEBGL & SIMULATION HELPERS (Extracted)
+        // ==========================================
         const createShader = (gl, type, source) => {
             const shader = gl.createShader(type);
             gl.shaderSource(shader, source.trim());
             gl.compileShader(shader);
             if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return shader;
-
-            const log = gl.getShaderInfoLog(shader);
-            console.error("Shader error:", log);
-            console.error("Source:", source); // Log source aid debugging
-            // Alerting the user to the specific error
-            alert("Shader Compilation Error:\n" + log);
+            console.error("Shader error:", gl.getShaderInfoLog(shader));
             return null;
         };
 
         const createProgram = (gl, vs, fs) => {
-            if (!vs || !fs) return null; // Safe check
+            if (!vs || !fs) return null; 
             const p = gl.createProgram();
             gl.attachShader(p, vs);
             gl.attachShader(p, fs);
             gl.linkProgram(p);
             if (gl.getProgramParameter(p, gl.LINK_STATUS)) return p;
-
-            console.error("Program Link Error:", gl.getProgramInfoLog(p));
+            console.error("Program error:", gl.getProgramInfoLog(p));
             return null;
         };
 
-        // Initialize FBO with NEAREST filtering for crisp pixel look
         const createFBO = (gl, w, h) => {
             const fbo = gl.createFramebuffer();
             gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
             const tex = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, tex);
-            // Changed to NEAREST for "hard" pixel edges
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
@@ -498,172 +1075,298 @@
         };
 
         const generateMondrianLayout = (targetCount) => {
-            let rects = [{ x: 0, y: 0, w: 1, h: 1 }];
+            let rects = [{x:0, y:0, w:1, h:1}];
             while (rects.length < targetCount) {
-                let largestIdx = 0, maxArea = 0;
-                for (let i = 0; i < rects.length; i++) {
+                let largestIdx = 0;
+                let maxArea = 0;
+                for(let i=0; i<rects.length; i++) {
                     const area = rects[i].w * rects[i].h;
                     if (area > maxArea) { maxArea = area; largestIdx = i; }
                 }
                 const r = rects[largestIdx];
-                if (maxArea < 0.02) break;
+                if (maxArea < 0.02) break; 
                 rects.splice(largestIdx, 1);
-
                 const splitVert = r.w > r.h ? true : (r.h > r.w ? false : Math.random() > 0.5);
                 const split = 0.3 + Math.random() * 0.4;
                 if (splitVert) {
-                    rects.push({ x: r.x, y: r.y, w: r.w * split, h: r.h });
-                    rects.push({ x: r.x + r.w * split, y: r.y, w: r.w * (1 - split), h: r.h });
+                    const w1 = r.w * split;
+                    const w2 = r.w - w1;
+                    rects.push({x: r.x, y: r.y, w: w1, h: r.h});
+                    rects.push({x: r.x + w1, y: r.y, w: w2, h: r.h});
                 } else {
-                    rects.push({ x: r.x, y: r.y, w: r.w, h: r.h * split });
-                    rects.push({ x: r.x, y: r.y + r.h * split, w: r.w, h: r.h * (1 - split) });
+                    const h1 = r.h * split;
+                    const h2 = r.h - h1;
+                    rects.push({x: r.x, y: r.y, w: r.w, h: h1});
+                    rects.push({x: r.x, y: r.y + h1, w: r.w, h: h2});
                 }
             }
-            while (rects.length < 32) rects.push({ x: 0, y: 0, w: 0, h: 0 });
+            while(rects.length < 32) rects.push({x:0, y:0, w:0, h:0});
             return rects.slice(0, 32);
         };
 
-        const generateEffects = (count) => {
-            const effects = [], seeds = [], speeds = [], rotations = [];
-            for (let i = 0; i < 32; i++) {
-                // Mix of effects:
-                // 50% Classic (0-27)
-                // 25% New UV (28-36)
-                // 25% Color (100-112)
-                let id = 0;
-                let r = Math.random();
-
-                if (i >= count) {
-                    id = 0;
-                } else if (r < 0.5) {
-                    id = Math.floor(Math.random() * 28); // 0-27
-                } else if (r < 0.75) {
-                    id = 28 + Math.floor(Math.random() * 9); // 28-36
-                } else {
-                    id = 100 + Math.floor(Math.random() * 13); // 100-112
-                }
-
-                effects.push(id);
-                seeds.push(Math.random());
-                speeds.push(0.5 + Math.random() * 0.5);
-                rotations.push(Math.floor(Math.random() * 4));
+        const generateEffects = (allowedIds, count) => {
+            const effects = [], postEffects = [], seeds = [], speeds = [], rotations = [], palettes = [], scales = [];
+            let pool = allowedIds && allowedIds.length >= count ? [...allowedIds] : Array.from({length: 33}, (_, i) => i);
+            
+            for (let i = pool.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [pool[i], pool[j]] = [pool[j], pool[i]];
             }
-            return { effects, seeds, speeds, rotations };
+
+            for(let i=0; i<32; i++) {
+                effects.push(i < count ? pool[i] : 0);
+                postEffects.push(i < count ? Math.floor(Math.random() * 37) : -1); 
+                seeds.push(Math.random());
+                speeds.push((1.0 + Math.random() * 2.0) * CONFIG.SPEED_MULTIPLIER); 
+                rotations.push(Math.floor(Math.random() * 4));
+                palettes.push(Math.floor(Math.random() * 7)); 
+                scales.push(1.0 + Math.random() * 1.0); 
+            }
+            
+            const bgPostEffect = Math.floor(Math.random() * 37);
+            const bgSeed = Math.random();
+
+            return { effects, postEffects, seeds, speeds, rotations, palettes, scales, bgPostEffect, bgSeed };
         };
 
+
+        // ==========================================
+        // 4. REACT COMPONENTS
+        // ==========================================
         const ShaderCanvas = () => {
             const canvasRef = useRef(null);
             const reqIdRef = useRef(null);
-
-            // Config State
+            
+            // OPTIMIZATION 1: Bypass React reconciliation for high-frequency tooltip
+            const tooltipRef = useRef(null); 
+            
             const [config, setConfig] = useState({
-                feedbackDecay: 0.90, // User tuned
+                feedbackDecay: 0.99, 
                 sharpen: true,
                 pixelSorting: false,
-                threshold: 0.12     // User tuned
+                sortThreshold: 0.1,
+                grayscale: false
             });
+            
             const configRef = useRef(config);
             useEffect(() => { configRef.current = config; }, [config]);
 
+            const simState = useRef({
+                rects: [], velocities: [], effects: [], postEffects: [], seeds: [], speeds: [], rotations: [], palettes: [], scales: [], 
+                bgPostEffect: -1, bgSeed: 0.0,
+                lastReset: 0
+            });
+            
+            const handleMouseMove = useCallback((e) => {
+                if (!canvasRef.current || !tooltipRef.current) return;
+                const rect = canvasRef.current.getBoundingClientRect();
+                const u = (e.clientX - rect.left) / rect.width;
+                const v = 1.0 - (e.clientY - rect.top) / rect.height; 
+
+                const zones = simState.current.rects;
+                if (!zones || zones.length === 0) return;
+
+                let name = null;
+                for(let i=0; i<32; i++) {
+                    const z = zones[i];
+                    if (!z || z.w < 0.001) continue;
+                    if (u >= z.x && u < z.x + z.w && v >= z.y && v < z.y + z.h) {
+                        const driftName = EFFECTS_MAP[simState.current.effects[i]];
+                        const postName = POST_EFFECTS_MAP[simState.current.postEffects[i]] || "None";
+                        name = `${driftName} + [${postName}]`;
+                        break;
+                    }
+                }
+                
+                // If not hovering over a zone, show the background effect
+                if (!name && simState.current.bgPostEffect !== undefined) {
+                    const bgPostName = POST_EFFECTS_MAP[simState.current.bgPostEffect] || "None";
+                    name = `Background + [${bgPostName}]`;
+                }
+
+                // Directly manipulate DOM to prevent component re-renders
+                if (name) {
+                    tooltipRef.current.style.display = 'block';
+                    tooltipRef.current.style.left = `${e.clientX + 20}px`;
+                    tooltipRef.current.style.top = `${e.clientY + 20}px`;
+                    tooltipRef.current.innerText = name;
+                } else {
+                    tooltipRef.current.style.display = 'none';
+                }
+            }, []);
+
             useEffect(() => {
                 const canvas = canvasRef.current;
-                const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: false });
+                const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
                 if (!gl) return;
 
+                let fbo1, fbo2;
+
                 const resize = () => {
-                    canvas.width = window.innerWidth;
-                    canvas.height = window.innerHeight;
-                    gl.viewport(0, 0, window.innerWidth, window.innerHeight);
+                    const w = window.innerWidth;
+                    const h = window.innerHeight;
+                    canvas.width = w; 
+                    canvas.height = h;
+                    gl.viewport(0, 0, w, h);
+
+                    if (fbo1) { gl.deleteFramebuffer(fbo1.fbo); gl.deleteTexture(fbo1.texture); }
+                    if (fbo2) { gl.deleteFramebuffer(fbo2.fbo); gl.deleteTexture(fbo2.texture); }
+
+                    fbo1 = createFBO(gl, w, h);
+                    fbo2 = createFBO(gl, w, h);
+
+                    const initData = new Uint8Array(w * h * 4);
+                    for(let i=0; i<initData.length; i+=4) {
+                        const val = Math.random() > 0.993 ? 255 : 0;
+                        initData[i] = initData[i+1] = initData[i+2] = val;
+                        initData[i+3] = 255;
+                    }
+                    gl.bindTexture(gl.TEXTURE_2D, fbo1.texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, initData);
                 };
+                
                 window.addEventListener('resize', resize);
                 resize();
 
                 const vs = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
                 const fsFeedback = createShader(gl, gl.FRAGMENT_SHADER, feedbackShaderSource);
                 const fsScreen = createShader(gl, gl.FRAGMENT_SHADER, drawScreenShaderSource);
+                
                 const progFeedback = createProgram(gl, vs, fsFeedback);
                 const progScreen = createProgram(gl, vs, fsScreen);
 
-                if (!progFeedback || !progScreen) return;
-
-                let fbo1 = createFBO(gl, CONFIG.INTERNAL_RES_X, CONFIG.INTERNAL_RES_Y);
-                let fbo2 = createFBO(gl, CONFIG.INTERNAL_RES_X, CONFIG.INTERNAL_RES_Y);
-
                 const buf = gl.createBuffer();
                 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
 
-                // Locations
                 const locs = {
                     fb: {
                         iRes: gl.getUniformLocation(progFeedback, "iResolution"),
                         iTime: gl.getUniformLocation(progFeedback, "iTime"),
+                        uTimeSinceReset: gl.getUniformLocation(progFeedback, "u_timeSinceReset"),
                         uPrev: gl.getUniformLocation(progFeedback, "u_prevFrame"),
                         uDecay: gl.getUniformLocation(progFeedback, "u_feedbackDecay"),
                         uSort: gl.getUniformLocation(progFeedback, "u_pixelSorting"),
+                        uSortThresh: gl.getUniformLocation(progFeedback, "u_sortThreshold"),
                         uRects: gl.getUniformLocation(progFeedback, "u_rects"),
                         uEffects: gl.getUniformLocation(progFeedback, "u_effects"),
                         uSpeeds: gl.getUniformLocation(progFeedback, "u_speeds"),
                         uSeeds: gl.getUniformLocation(progFeedback, "u_seeds"),
                         uRotations: gl.getUniformLocation(progFeedback, "u_rotations"),
+                        uScales: gl.getUniformLocation(progFeedback, "u_scales"),
+                        uVelocities: gl.getUniformLocation(progFeedback, "u_velocities"),
+                        uPalettes: gl.getUniformLocation(progFeedback, "u_palettes"),
                         aPos: gl.getAttribLocation(progFeedback, "a_position"),
                     },
                     sc: {
                         iRes: gl.getUniformLocation(progScreen, "iResolution"),
+                        iTime: gl.getUniformLocation(progScreen, "iTime"),
                         uFrame: gl.getUniformLocation(progScreen, "u_frame"),
                         uSharp: gl.getUniformLocation(progScreen, "u_sharpenEnabled"),
-                        uThresh: gl.getUniformLocation(progScreen, "u_threshold"),
+                        uGray: gl.getUniformLocation(progScreen, "u_grayscale"),
+                        uRects: gl.getUniformLocation(progScreen, "u_rects"),
+                        uPostEffects: gl.getUniformLocation(progScreen, "u_post_effects"),
+                        uSeeds: gl.getUniformLocation(progScreen, "u_seeds"),
+                        uBgPostEffect: gl.getUniformLocation(progScreen, "u_bg_post_effect"),
+                        uBgSeed: gl.getUniformLocation(progScreen, "u_bg_seed"),
                         aPos: gl.getAttribLocation(progScreen, "a_position"),
                     }
                 };
 
-                // Zones State
-                let lastReset = 0;
-                let zoneData = { rects: [], effects: [], seeds: [], speeds: [], rotations: [] };
+                // OPTIMIZATION 2: Pre-allocate typed arrays to prevent garbage collection stutters
+                const rectData = new Float32Array(128);
+                const velData = new Float32Array(64);
+                const effectsData = new Int32Array(32);
+                const postEffectsData = new Int32Array(32);
+                const speedsData = new Float32Array(32);
+                const seedsData = new Float32Array(32);
+                const rotationsData = new Int32Array(32);
+                const scalesData = new Float32Array(32);
+                const palettesData = new Int32Array(32);
 
                 const resetZones = () => {
-                    const count = Math.floor(Math.random() * (CONFIG.MAX_ZONES - CONFIG.MIN_ZONES + 1)) + CONFIG.MIN_ZONES;
-                    zoneData.rects = generateMondrianLayout(count);
-                    const e = generateEffects(count);
-                    zoneData.effects = e.effects;
-                    zoneData.seeds = e.seeds;
-                    zoneData.speeds = e.speeds;
-                    zoneData.rotations = e.rotations;
-                    lastReset = performance.now();
-                };
-                resetZones();
-
-                // Seed Initial Texture
-                const initData = new Uint8Array(CONFIG.INTERNAL_RES_X * CONFIG.INTERNAL_RES_Y * 4);
-                for (let i = 0; i < initData.length; i += 4) {
-                    const val = Math.random() > 0.99 ? 255 : 0;
-                    initData[i] = val; initData[i + 1] = val; initData[i + 2] = val; initData[i + 3] = 255;
-                }
-                gl.bindTexture(gl.TEXTURE_2D, fbo1.texture);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, CONFIG.INTERNAL_RES_X, CONFIG.INTERNAL_RES_Y, 0, gl.RGBA, gl.UNSIGNED_BYTE, initData);
-
-                const render = (time) => {
-                    if (time - lastReset > CONFIG.RESET_INTERVAL) resetZones();
-
-                    const rectData = new Float32Array(32 * 4);
-                    zoneData.rects.forEach((r, i) => {
-                        rectData[i * 4] = r.x; rectData[i * 4 + 1] = r.y; rectData[i * 4 + 2] = r.w; rectData[i * 4 + 3] = r.h;
+                    let count = simState.current.rects.length;
+                    if (count === 0) {
+                        count = Math.floor(Math.random() * (CONFIG.MAX_ZONES - CONFIG.MIN_ZONES + 1)) + CONFIG.MIN_ZONES;
+                        const newRects = generateMondrianLayout(count);
+                        simState.current.rects = newRects.map(r => ({...r}));
+                        simState.current.velocities = newRects.map(() => ({
+                            vx: (Math.random() - 0.5) * 0.002 * CONFIG.SPEED_MULTIPLIER, 
+                            vy: (Math.random() - 0.5) * 0.002 * CONFIG.SPEED_MULTIPLIER
+                        }));
+                    }
+                    
+                    const allowedArray = Object.keys(EFFECTS_MAP).map(Number);
+                    const { effects, postEffects, seeds, speeds, rotations, palettes, scales, bgPostEffect, bgSeed } = generateEffects(allowedArray, count);
+                    
+                    Object.assign(simState.current, { 
+                        effects, postEffects, seeds, speeds, rotations, palettes, scales, bgPostEffect, bgSeed, lastReset: performance.now() 
                     });
 
-                    // PASS 1: Feedback
+                    // OPTIMIZATION 3: Update TypedArrays and upload static uniforms ONLY on reset
+                    for (let i = 0; i < 32; i++) {
+                        effectsData[i] = effects[i] || 0;
+                        postEffectsData[i] = postEffects[i] !== undefined ? postEffects[i] : -1;
+                        speedsData[i] = speeds[i] || 0;
+                        seedsData[i] = seeds[i] || 0;
+                        rotationsData[i] = rotations[i] || 0;
+                        palettesData[i] = palettes[i] || 0;
+                        scalesData[i] = scales[i] || 0;
+                    }
+
+                    gl.useProgram(progFeedback);
+                    gl.uniform1iv(locs.fb.uEffects, effectsData);
+                    gl.uniform1fv(locs.fb.uSpeeds, speedsData);
+                    gl.uniform1fv(locs.fb.uSeeds, seedsData);
+                    gl.uniform1iv(locs.fb.uRotations, rotationsData);
+                    gl.uniform1fv(locs.fb.uScales, scalesData);
+                    gl.uniform1iv(locs.fb.uPalettes, palettesData);
+                };
+                
+                resetZones();
+
+                const render = (time) => {
+                    if ((time - simState.current.lastReset > CONFIG.RESET_INTERVAL)) resetZones();
+
+                    const timeSinceReset = (time - simState.current.lastReset) * 0.001;
+
+                    // Physics / Drift (Optimized)
+                    for(let i=0; i<32; i++) {
+                        const r = simState.current.rects[i];
+                        const v = simState.current.velocities[i];
+                        if(r && v && r.w > 0) { // Safety check to skip dead rects faster
+                            r.x += v.vx; 
+                            r.y += v.vy;
+                            
+                            // OPTIMIZATION 4: Fixed redundant bounds checks via "else if"
+                            if (r.x <= 0) { r.x = 0; v.vx *= -1; }
+                            else if (r.x + r.w >= 1.0) { r.x = 1.0 - r.w; v.vx *= -1; }
+                            
+                            if (r.y <= 0) { r.y = 0; v.vy *= -1; }
+                            else if (r.y + r.h >= 1.0) { r.y = 1.0 - r.h; v.vy *= -1; }
+
+                            rectData[i*4]=r.x; rectData[i*4+1]=r.y; rectData[i*4+2]=r.w; rectData[i*4+3]=r.h;
+                            velData[i*2]=v.vx; velData[i*2+1]=v.vy;
+                        } else {
+                            rectData[i*4]=0; rectData[i*4+1]=0; rectData[i*4+2]=0; rectData[i*4+3]=0;
+                            velData[i*2]=0; velData[i*2+1]=0;
+                        }
+                    }
+
+                    // PASS 1: Feedback Loop
                     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo2.fbo);
-                    gl.viewport(0, 0, CONFIG.INTERNAL_RES_X, CONFIG.INTERNAL_RES_Y);
+                    gl.viewport(0, 0, canvas.width, canvas.height);
                     gl.useProgram(progFeedback);
 
-                    gl.uniform2f(locs.fb.iRes, CONFIG.INTERNAL_RES_X, CONFIG.INTERNAL_RES_Y);
-                    gl.uniform1f(locs.fb.iTime, time * 0.001);
+                    gl.uniform2f(locs.fb.iRes, canvas.width, canvas.height);
+                    gl.uniform1f(locs.fb.iTime, time * 0.001 * CONFIG.SPEED_MULTIPLIER);
+                    gl.uniform1f(locs.fb.uTimeSinceReset, timeSinceReset);
                     gl.uniform1f(locs.fb.uDecay, configRef.current.feedbackDecay);
                     gl.uniform1f(locs.fb.uSort, configRef.current.pixelSorting ? 1.0 : 0.0);
+                    gl.uniform1f(locs.fb.uSortThresh, configRef.current.sortThreshold);
+
                     gl.uniform4fv(locs.fb.uRects, rectData);
-                    gl.uniform1iv(locs.fb.uEffects, new Int32Array(zoneData.effects));
-                    gl.uniform1fv(locs.fb.uSpeeds, new Float32Array(zoneData.speeds));
-                    gl.uniform1iv(locs.fb.uSeeds, new Float32Array(zoneData.seeds));
-                    gl.uniform1iv(locs.fb.uRotations, new Int32Array(zoneData.rotations));
+                    gl.uniform2fv(locs.fb.uVelocities, velData);
 
                     gl.activeTexture(gl.TEXTURE0);
                     gl.bindTexture(gl.TEXTURE_2D, fbo1.texture);
@@ -674,14 +1377,24 @@
                     gl.vertexAttribPointer(locs.fb.aPos, 2, gl.FLOAT, false, 0, 0);
                     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-                    // PASS 2: Screen
+                    // PASS 2: Screen Draw
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                     gl.viewport(0, 0, canvas.width, canvas.height);
                     gl.useProgram(progScreen);
 
                     gl.uniform2f(locs.sc.iRes, canvas.width, canvas.height);
+                    gl.uniform1f(locs.sc.iTime, time * 0.001 * CONFIG.SPEED_MULTIPLIER);
                     gl.uniform1f(locs.sc.uSharp, configRef.current.sharpen ? 1.0 : 0.0);
-                    gl.uniform1f(locs.sc.uThresh, configRef.current.threshold);
+                    gl.uniform1f(locs.sc.uGray, configRef.current.grayscale ? 1.0 : 0.0);
+                    gl.uniform4fv(locs.sc.uRects, rectData);
+                    
+                    // Cells
+                    gl.uniform1iv(locs.sc.uPostEffects, postEffectsData);
+                    gl.uniform1fv(locs.sc.uSeeds, seedsData);
+                    
+                    // Background Post Effect
+                    gl.uniform1i(locs.sc.uBgPostEffect, simState.current.bgPostEffect);
+                    gl.uniform1f(locs.sc.uBgSeed, simState.current.bgSeed);
 
                     gl.activeTexture(gl.TEXTURE0);
                     gl.bindTexture(gl.TEXTURE_2D, fbo2.texture);
@@ -692,24 +1405,49 @@
                     [fbo1, fbo2] = [fbo2, fbo1];
                     reqIdRef.current = requestAnimationFrame(render);
                 };
+                
                 reqIdRef.current = requestAnimationFrame(render);
 
                 return () => {
                     cancelAnimationFrame(reqIdRef.current);
                     window.removeEventListener('resize', resize);
+                    gl.deleteProgram(progFeedback); gl.deleteProgram(progScreen);
+                    if (fbo1) { gl.deleteFramebuffer(fbo1.fbo); gl.deleteTexture(fbo1.texture); }
+                    if (fbo2) { gl.deleteFramebuffer(fbo2.fbo); gl.deleteTexture(fbo2.texture); }
                 };
             }, []);
 
             return (
-                <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden">
-                    <canvas ref={canvasRef} className="w-full h-full object-cover" />
+                <div 
+                    className="relative w-full h-full group bg-black flex items-center justify-center overflow-hidden"
+                    onMouseMove={handleMouseMove}
+                    onClick={() => setConfig(prev => ({ ...prev, grayscale: !prev.grayscale }))}
+                    onMouseLeave={() => { if (tooltipRef.current) tooltipRef.current.style.display = 'none'; }}
+                >
+                    <canvas ref={canvasRef} className="shadow-[0_0_50px_rgba(255,255,255,0.15)] w-full h-full" />
+                    
+                    {/* OPTIMIZATION 1.5: Using a persistent ref'd DOM node for the tooltip instead of React State */}
+                    <div ref={tooltipRef} style={{
+                        display: 'none',
+                        position: 'fixed', 
+                        color: 'white', backgroundColor: 'rgba(0, 0, 0, 0.9)', border: '1px solid white',
+                        padding: '6px 10px', fontFamily: 'Courier New, monospace', fontWeight: 'bold',
+                        fontSize: '14px', pointerEvents: 'none', zIndex: 100, textTransform: 'uppercase',
+                        boxShadow: '4px 4px 0px rgba(255,255,255,0.3)'
+                    }}></div>
                 </div>
             );
         };
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<ShaderCanvas />);
+        const App = () => (
+            <div className="w-screen h-screen flex items-center justify-center bg-black">
+                <ShaderCanvas />
+            </div>
+        );
+        
+        const rootElement = document.getElementById('root');
+        ReactDOM.createRoot(rootElement).render(<App />);
+
     </script>
 </body>
-
 </html>
