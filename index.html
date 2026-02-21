@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>untitled</title>
+    <title>Pixel Drift Emulation (Optimized)</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Using Production Build of React for performance -->
@@ -400,7 +400,7 @@
             uniform float iTime;
             uniform sampler2D u_frame;
             uniform float u_sharpenEnabled;
-            uniform float u_grayscale; 
+            uniform float u_showCells; 
 
             uniform vec4 u_rects[32];
             uniform int u_post_effects[32];
@@ -488,19 +488,8 @@
                     source.rgb = source.rgb * 5.0 - n - s - e - w;
                 }
                 
-                vec3 color;
-                
-                if (u_grayscale > 0.5) {
-                    // Pass raw source for 1-bit / 4-bit quantization later
-                    color = source.rgb;
-                } else {
-                    float maxVal = max(source.r, max(source.g, source.b));
-                    float binary = step(0.15, maxVal);
-                    vec3 fg = source.rgb / (maxVal + 0.0001); 
-                    color = mix(vec3(0.0), fg, binary);
-                }
-                
-                return vec4(color, 1.0);
+                // Color transformation (grayscale) is handled fully in main function now
+                return vec4(source.rgb, 1.0);
             }
 
             vec2 getRegionCenter(vec4 region) { return vec2(region.x + region.z / 2.0, region.y + region.w / 2.0); }
@@ -1010,7 +999,7 @@
                 vec4 color = vec4(0.0);
                 vec4 baseColor = getStylizedColor(uv);
                 
-                if (activeCell != -1) {
+                if (activeCell != -1 && u_showCells > 0.5) {
                     // Cell-specific Effect
                     int pe = u_post_effects[activeCell];
                     float seed = u_seeds[activeCell];
@@ -1023,20 +1012,23 @@
                 }
 
                 float borderThickness = 10.0; 
-                if (distToEdgePx < borderThickness) {
+                if (distToEdgePx < borderThickness && u_showCells > 0.5) {
                     color.rgb = vec3(0.0);
                 }
                 
-                if (u_grayscale > 0.5) {
-                    float l = luma(color.rgb);
-                    if (activeCell != -1) {
-                        // Cells: 4-bit (16 levels)
-                        float levels = 15.0; 
-                        color.rgb = vec3(floor(l * levels + 0.5) / levels);
-                    } else {
-                        // Background: 1-bit (black or white)
-                        color.rgb = vec3(step(0.15, l));
-                    }
+                // Monochrome Logic (Always On)
+                float l = luma(color.rgb);
+                if (u_showCells < 0.5) {
+                    // 2-bit (4 levels) for entire screen when hidden
+                    float levels = 3.0; 
+                    color.rgb = vec3(floor(l * levels + 0.5) / levels);
+                } else if (activeCell != -1) {
+                    // Cells: 4-bit (16 levels) when shown
+                    float levels = 15.0; 
+                    color.rgb = vec3(floor(l * levels + 0.5) / levels);
+                } else {
+                    // Background: 1-bit (black or white) when cells are visible
+                    color.rgb = vec3(step(0.15, l));
                 }
 
                 fragColorOut = color;
@@ -1148,7 +1140,7 @@
                 sharpen: true,
                 pixelSorting: false,
                 sortThreshold: 0.1,
-                grayscale: true
+                showCells: true
             });
             
             const configRef = useRef(config);
@@ -1228,7 +1220,7 @@
                         iTime: gl.getUniformLocation(progScreen, "iTime"),
                         uFrame: gl.getUniformLocation(progScreen, "u_frame"),
                         uSharp: gl.getUniformLocation(progScreen, "u_sharpenEnabled"),
-                        uGray: gl.getUniformLocation(progScreen, "u_grayscale"),
+                        uShowCells: gl.getUniformLocation(progScreen, "u_showCells"),
                         uRects: gl.getUniformLocation(progScreen, "u_rects"),
                         uPostEffects: gl.getUniformLocation(progScreen, "u_post_effects"),
                         uSeeds: gl.getUniformLocation(progScreen, "u_seeds"),
@@ -1350,7 +1342,7 @@
                     gl.uniform2f(locs.sc.iRes, canvas.width, canvas.height);
                     gl.uniform1f(locs.sc.iTime, time * 0.001 * CONFIG.SPEED_MULTIPLIER);
                     gl.uniform1f(locs.sc.uSharp, configRef.current.sharpen ? 1.0 : 0.0);
-                    gl.uniform1f(locs.sc.uGray, configRef.current.grayscale ? 1.0 : 0.0);
+                    gl.uniform1f(locs.sc.uShowCells, configRef.current.showCells ? 1.0 : 0.0);
                     gl.uniform4fv(locs.sc.uRects, rectData);
                     
                     // Cells
@@ -1385,7 +1377,7 @@
             return (
                 <div 
                     className="relative w-full h-full group bg-black flex items-center justify-center overflow-hidden"
-                    onClick={() => setConfig(prev => ({ ...prev, grayscale: !prev.grayscale }))}
+                    onClick={() => setConfig(prev => ({ ...prev, showCells: !prev.showCells }))}
                 >
                     <canvas ref={canvasRef} className="shadow-[0_0_50px_rgba(255,255,255,0.15)] w-full h-full" />
                 </div>
